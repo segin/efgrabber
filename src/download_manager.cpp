@@ -155,6 +155,10 @@ void DownloadManager::set_retry_attempts(int attempts) {
     max_retry_attempts_ = attempts;
 }
 
+void DownloadManager::set_cookie_file(const std::string& cookie_file) {
+    cookie_file_ = cookie_file;
+}
+
 void DownloadManager::scraper_worker() {
     log("Scraper worker started");
 
@@ -166,6 +170,9 @@ void DownloadManager::scraper_worker() {
     int high = 100000;  // Start with a high upper bound
 
     Downloader probe_downloader;
+    if (!cookie_file_.empty()) {
+        probe_downloader.set_cookie_file(cookie_file_);
+    }
 
     while (low <= high && !stop_requested_) {
         int mid = low + (high - low) / 2;
@@ -391,6 +398,9 @@ void DownloadManager::stats_worker() {
 
 void DownloadManager::scrape_page(int page_number) {
     Downloader downloader;
+    if (!cookie_file_.empty()) {
+        downloader.set_cookie_file(cookie_file_);
+    }
     std::string url = scraper_->build_page_url(page_number);
 
     auto result = downloader.download_page(url);
@@ -444,6 +454,9 @@ void DownloadManager::download_file(const FileRecord& file) {
     fs::create_directories(filepath.parent_path());
 
     Downloader downloader;
+    if (!cookie_file_.empty()) {
+        downloader.set_cookie_file(cookie_file_);
+    }
     auto result = downloader.download_to_file(file.url, file.local_path);
 
     if (result.http_code == 404) {

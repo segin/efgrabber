@@ -2,6 +2,7 @@
 #include <QDateTime>
 #include <QScrollBar>
 #include <QApplication>
+#include <QFileDialog>
 #include <sstream>
 #include <iomanip>
 
@@ -69,6 +70,43 @@ void MainWindow::setupUi() {
     modeLayout->addWidget(modeCombo_);
     modeLayout->addStretch();
     mainLayout_->addLayout(modeLayout);
+
+    // Download folder selector
+    QHBoxLayout* folderLayout = new QHBoxLayout();
+    folderLayout->addWidget(new QLabel("Download Folder:"));
+    downloadPathEdit_ = new QLineEdit("downloads");
+    folderLayout->addWidget(downloadPathEdit_);
+    browseButton_ = new QPushButton("Browse...");
+    connect(browseButton_, &QPushButton::clicked, this, &MainWindow::onBrowseClicked);
+    folderLayout->addWidget(browseButton_);
+    mainLayout_->addLayout(folderLayout);
+
+    // Cookie file selector
+    QHBoxLayout* cookieLayout = new QHBoxLayout();
+    cookieLayout->addWidget(new QLabel("Cookie File:"));
+    cookieFileEdit_ = new QLineEdit();
+    cookieFileEdit_->setPlaceholderText("Optional: Netscape cookie file for authentication");
+    cookieLayout->addWidget(cookieFileEdit_);
+    cookieBrowseButton_ = new QPushButton("Browse...");
+    connect(cookieBrowseButton_, &QPushButton::clicked, this, &MainWindow::onCookieBrowseClicked);
+    cookieLayout->addWidget(cookieBrowseButton_);
+    mainLayout_->addLayout(cookieLayout);
+
+    // Brute force ID range
+    QHBoxLayout* rangeLayout = new QHBoxLayout();
+    rangeLayout->addWidget(new QLabel("Brute Force Range:"));
+    rangeLayout->addWidget(new QLabel("Start ID:"));
+    startIdSpin_ = new QSpinBox();
+    startIdSpin_->setRange(0, 99999999);
+    startIdSpin_->setValue(2205655);
+    rangeLayout->addWidget(startIdSpin_);
+    rangeLayout->addWidget(new QLabel("End ID:"));
+    endIdSpin_ = new QSpinBox();
+    endIdSpin_->setRange(0, 99999999);
+    endIdSpin_->setValue(2730262);
+    rangeLayout->addWidget(endIdSpin_);
+    rangeLayout->addStretch();
+    mainLayout_->addLayout(rangeLayout);
 
     // Overall progress
     overallGroup_ = new QGroupBox("Overall Progress");
@@ -194,6 +232,28 @@ void MainWindow::onPauseClicked() {
 
 void MainWindow::onDataSetChanged(int index) {
     selectedDataSet_ = dataSetCombo_->itemData(index).toInt();
+    // Update brute force range for this data set
+    auto config = get_data_set_config(selectedDataSet_);
+    startIdSpin_->setValue(static_cast<int>(config.first_file_id));
+    endIdSpin_->setValue(static_cast<int>(config.last_file_id));
+}
+
+void MainWindow::onBrowseClicked() {
+    QString dir = QFileDialog::getExistingDirectory(this, "Select Download Folder",
+                                                     downloadPathEdit_->text(),
+                                                     QFileDialog::ShowDirsOnly);
+    if (!dir.isEmpty()) {
+        downloadPathEdit_->setText(dir);
+    }
+}
+
+void MainWindow::onCookieBrowseClicked() {
+    QString file = QFileDialog::getOpenFileName(this, "Select Cookie File",
+                                                 QDir::homePath(),
+                                                 "Cookie Files (*.txt);;All Files (*)");
+    if (!file.isEmpty()) {
+        cookieFileEdit_->setText(file);
+    }
 }
 
 void MainWindow::onModeChanged(int index) {
@@ -210,7 +270,10 @@ void MainWindow::onStatsTimer() {
 void MainWindow::startDownload(int dataSet, OperationMode mode) {
     if (isRunning_) return;
 
-    QString downloadDir = "downloads";
+    QString downloadDir = downloadPathEdit_->text();
+    if (downloadDir.isEmpty()) {
+        downloadDir = "downloads";
+    }
     QString dbPath = "efgrabber.db";
 
     downloadManager_ = std::make_unique<DownloadManager>(dbPath.toStdString(), downloadDir.toStdString());
@@ -218,6 +281,13 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     if (!downloadManager_->initialize()) {
         appendLog("Failed to initialize download manager");
         return;
+    }
+
+    // Set cookie file if specified
+    QString cookieFile = cookieFileEdit_->text();
+    if (!cookieFile.isEmpty()) {
+        downloadManager_->set_cookie_file(cookieFile.toStdString());
+        appendLog("Using cookies from: " + cookieFile);
     }
 
     // Set callbacks
@@ -245,13 +315,10 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
 
     downloadManager_->set_callbacks(callbacks);
 
-    // Get config
-    DataSetConfig config;
-    if (dataSet == 11) {
-        config = get_data_set_11_config();
-    } else {
-        config = make_data_set_config(dataSet);
-    }
+    // Get config with user-specified brute force range
+    DataSetConfig config = get_data_set_config(dataSet);
+    config.first_file_id = static_cast<uint64_t>(startIdSpin_->value());
+    config.last_file_id = static_cast<uint64_t>(endIdSpin_->value());
 
     downloadManager_->start(config, mode);
 

@@ -28,13 +28,14 @@ void print_usage(const char* program) {
     std::cout << "  -d, --data-set N     Data set number to download (1-12, default: 11)\n";
     std::cout << "  -m, --mode MODE      Download mode: scraper, brute, hybrid (default: scraper)\n";
     std::cout << "  -o, --output DIR     Output directory (default: downloads)\n";
+    std::cout << "  -k, --cookies FILE   Netscape cookie file for authentication\n";
     std::cout << "  -c, --concurrent N   Max concurrent downloads (default: 1000)\n";
     std::cout << "  -r, --retries N      Max retry attempts (default: 3)\n";
     std::cout << "  -s, --start ID       Brute force start ID (overrides default)\n";
     std::cout << "  -e, --end ID         Brute force end ID (overrides default)\n";
     std::cout << "  -h, --help           Show this help message\n";
     std::cout << "\nExamples:\n";
-    std::cout << "  " << program << " -d 11 -m scraper\n";
+    std::cout << "  " << program << " -d 11 -m scraper -k cookies.txt\n";
     std::cout << "  " << program << " -d 9 -m hybrid -c 500\n";
     std::cout << "  " << program << " -d 11 -m brute -s 2205655 -e 2730262\n";
 }
@@ -59,6 +60,7 @@ int main(int argc, char** argv) {
     int data_set = 11;
     std::string mode_str = "scraper";
     std::string output_dir = "downloads";
+    std::string cookie_file;
     int max_concurrent = 1000;
     int max_retries = 3;
     uint64_t brute_start = 0;
@@ -69,6 +71,7 @@ int main(int argc, char** argv) {
         {"data-set", required_argument, nullptr, 'd'},
         {"mode", required_argument, nullptr, 'm'},
         {"output", required_argument, nullptr, 'o'},
+        {"cookies", required_argument, nullptr, 'k'},
         {"concurrent", required_argument, nullptr, 'c'},
         {"retries", required_argument, nullptr, 'r'},
         {"start", required_argument, nullptr, 's'},
@@ -78,7 +81,7 @@ int main(int argc, char** argv) {
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "d:m:o:c:r:s:e:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:m:o:k:c:r:s:e:h", long_options, nullptr)) != -1) {
         switch (opt) {
             case 'd':
                 data_set = std::stoi(optarg);
@@ -93,6 +96,9 @@ int main(int argc, char** argv) {
                 break;
             case 'o':
                 output_dir = optarg;
+                break;
+            case 'k':
+                cookie_file = optarg;
                 break;
             case 'c':
                 max_concurrent = std::stoi(optarg);
@@ -136,15 +142,10 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    // Get data set config
-    DataSetConfig config;
-    if (data_set == 11) {
-        config = get_data_set_11_config();
-    } else {
-        config = make_data_set_config(data_set);
-    }
+    // Get data set config with known ID ranges
+    DataSetConfig config = get_data_set_config(data_set);
 
-    // Override brute force range if specified
+    // Override brute force range if specified on command line
     if (brute_start > 0) {
         config.first_file_id = brute_start;
     }
@@ -175,6 +176,10 @@ int main(int argc, char** argv) {
 
     manager.set_max_concurrent_downloads(max_concurrent);
     manager.set_retry_attempts(max_retries);
+    if (!cookie_file.empty()) {
+        manager.set_cookie_file(cookie_file);
+        std::cout << "Using cookies from: " << cookie_file << "\n";
+    }
 
     // Set up callbacks for console output
     DownloadCallbacks callbacks;

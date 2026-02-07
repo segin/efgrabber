@@ -35,13 +35,84 @@ inline DataSetConfig make_data_set_config(int id) {
     return config;
 }
 
-// Known brute force ranges for specific data sets (can be overridden)
-// These are starting points; actual ranges may grow over time
-inline DataSetConfig get_data_set_11_config() {
-    auto config = make_data_set_config(11);
-    config.first_file_id = 2205655;
-    config.last_file_id = 2730262;
+// Known brute force ranges for specific data sets
+// These ranges are based on actual observed EFTA IDs from the DOJ website (February 2025)
+// Each data set's range ends where the next one begins (approximately)
+
+inline DataSetConfig get_data_set_config(int id) {
+    auto config = make_data_set_config(id);
+
+    // Real EFTA ID ranges discovered from DOJ index pages
+    // First ID of each set from scraping first pages:
+    // DS1: EFTA00000001, DS2: EFTA00003159, DS3: EFTA00003858, DS4: EFTA00005705
+    // DS5: EFTA00008409, DS6: EFTA00008529, DS7: EFTA00009016, DS8: EFTA00009676
+    // DS9: EFTA00039025, DS10: EFTA01262782, DS11: EFTA02205655, DS12: EFTA02730265
+
+    switch (id) {
+        case 1:
+            config.first_file_id = 1;        // EFTA00000001
+            config.last_file_id = 3158;      // EFTA00003158
+            break;
+        case 2:
+            config.first_file_id = 3159;     // EFTA00003159
+            config.last_file_id = 3857;      // EFTA00003857
+            break;
+        case 3:
+            config.first_file_id = 3858;     // EFTA00003858
+            config.last_file_id = 5586;      // EFTA00005586
+            break;
+        case 4:
+            config.first_file_id = 5705;     // EFTA00005705 (note: gap from DS3)
+            config.last_file_id = 8320;      // EFTA00008320
+            break;
+        case 5:
+            config.first_file_id = 8409;     // EFTA00008409
+            config.last_file_id = 8528;      // Up to DS6 start
+            break;
+        case 6:
+            config.first_file_id = 8529;     // EFTA00008529
+            config.last_file_id = 9015;      // Up to DS7 start
+            break;
+        case 7:
+            config.first_file_id = 9016;     // EFTA00009016
+            config.last_file_id = 9675;      // Up to DS8 start
+            break;
+        case 8:
+            config.first_file_id = 9676;     // EFTA00009676
+            config.last_file_id = 39024;     // Up to DS9 start
+            break;
+        case 9:
+            // Large data set - ~9308 pages
+            config.first_file_id = 39025;    // EFTA00039025
+            config.last_file_id = 1262781;   // Up to DS10 start
+            break;
+        case 10:
+            config.first_file_id = 1262782;  // EFTA01262782
+            config.last_file_id = 2205654;   // Up to DS11 start
+            break;
+        case 11:
+            // Data Set 11 - confirmed range
+            config.first_file_id = 2205655;  // EFTA02205655
+            config.last_file_id = 2730264;   // Up to DS12 start
+            break;
+        case 12:
+            // Most recent release
+            config.first_file_id = 2730265;  // EFTA02730265
+            config.last_file_id = 3500000;   // Estimated upper bound
+            break;
+        default:
+            // Unknown data set - use wide range
+            config.first_file_id = 1;
+            config.last_file_id = 9999999;
+            break;
+    }
+
     return config;
+}
+
+// Legacy function for backwards compatibility
+inline DataSetConfig get_data_set_11_config() {
+    return get_data_set_config(11);
 }
 
 // All supported data sets (1-12 as of 2025)

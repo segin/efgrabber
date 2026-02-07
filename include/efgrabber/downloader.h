@@ -52,6 +52,7 @@ public:
 
     // Set custom headers
     void set_cookie(const std::string& cookie);
+    void set_cookie_file(const std::string& cookie_file);
     void set_user_agent(const std::string& user_agent);
 
     // Cancel current download
@@ -69,6 +70,7 @@ private:
 
     CURL* curl_ = nullptr;
     std::string cookie_;
+    std::string cookie_file_;
     std::string user_agent_;
     std::atomic<bool> cancelled_{false};
     std::atomic<int64_t> bytes_downloaded_{0};

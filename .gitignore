@@ -17,8 +17,8 @@ cmake-build-*/
 *.dylib
 
 # Executables
-efgrabber
-efgrabber-cli
+/efgrabber
+/efgrabber-cli
 
 # Database files (local progress)
 *.db

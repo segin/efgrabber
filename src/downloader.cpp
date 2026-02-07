@@ -168,7 +168,14 @@ void Downloader::setup_common_options(CURL* curl, const std::string& url) {
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_USERAGENT, user_agent_.c_str());
-    curl_easy_setopt(curl, CURLOPT_COOKIE, cookie_.c_str());
+
+    // Use cookie file if specified, otherwise use cookie string
+    if (!cookie_file_.empty()) {
+        curl_easy_setopt(curl, CURLOPT_COOKIEFILE, cookie_file_.c_str());
+    } else if (!cookie_.empty()) {
+        curl_easy_setopt(curl, CURLOPT_COOKIE, cookie_.c_str());
+    }
+
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
 
@@ -336,6 +343,10 @@ bool Downloader::url_exists(const std::string& url) {
 
 void Downloader::set_cookie(const std::string& cookie) {
     cookie_ = cookie;
+}
+
+void Downloader::set_cookie_file(const std::string& cookie_file) {
+    cookie_file_ = cookie_file;
 }
 
 void Downloader::set_user_agent(const std::string& user_agent) {

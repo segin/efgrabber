@@ -67,6 +67,7 @@ public:
     void set_max_concurrent_downloads(int max);
     void set_max_concurrent_scrapes(int max);
     void set_retry_attempts(int attempts);
+    void set_cookie_file(const std::string& cookie_file);
 
 private:
     // Worker methods
@@ -101,6 +102,7 @@ private:
     int max_concurrent_downloads_ = MAX_CONCURRENT_DOWNLOADS;
     int max_concurrent_scrapes_ = MAX_CONCURRENT_PAGE_SCRAPES;
     int max_retry_attempts_ = MAX_RETRY_ATTEMPTS;
+    std::string cookie_file_;
 
     // State
     std::atomic<bool> running_{false};

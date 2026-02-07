@@ -14,6 +14,8 @@
 #include <QGridLayout>
 #include <QTimer>
 #include <QMutex>
+#include <QLineEdit>
+#include <QSpinBox>
 #include <memory>
 #include <vector>
 #include <string>
@@ -33,6 +35,8 @@ public slots:
     void onStartClicked();
     void onStopClicked();
     void onPauseClicked();
+    void onBrowseClicked();
+    void onCookieBrowseClicked();
     void onDataSetChanged(int index);
     void onModeChanged(int index);
     void onStatsTimer();
@@ -68,6 +72,18 @@ private:
 
     // Mode selector
     QComboBox* modeCombo_;
+
+    // Download folder
+    QLineEdit* downloadPathEdit_;
+    QPushButton* browseButton_;
+
+    // Cookie file
+    QLineEdit* cookieFileEdit_;
+    QPushButton* cookieBrowseButton_;
+
+    // Brute force range
+    QSpinBox* startIdSpin_;
+    QSpinBox* endIdSpin_;
 
     // Progress bars
     QGroupBox* overallGroup_;
