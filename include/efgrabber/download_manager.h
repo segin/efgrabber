@@ -45,6 +45,7 @@ public:
 
     // Start downloading
     void start(const DataSetConfig& config, OperationMode mode);
+    void start_download_only(const DataSetConfig& config);  // Only download, don't scrape or brute force
 
     // Stop downloading
     void stop();
@@ -68,6 +69,10 @@ public:
     void set_max_concurrent_scrapes(int max);
     void set_retry_attempts(int attempts);
     void set_cookie_file(const std::string& cookie_file);
+    void set_cookie_string(const std::string& cookies);  // Direct cookie string
+
+    // Add file to download queue (for browser-based scraping)
+    void add_file_to_queue(const std::string& file_id, const std::string& url, const std::string& local_path);
 
 private:
     // Worker methods
@@ -103,6 +108,7 @@ private:
     int max_concurrent_scrapes_ = MAX_CONCURRENT_PAGE_SCRAPES;
     int max_retry_attempts_ = MAX_RETRY_ATTEMPTS;
     std::string cookie_file_;
+    std::string cookie_string_;  // Direct cookie string from browser
 
     // State
     std::atomic<bool> running_{false};

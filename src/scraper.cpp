@@ -10,10 +10,18 @@ Scraper::Scraper(const DataSetConfig& config)
     : config_(config),
       // Match PDF links like href="/epstein/files/DataSet%2011/EFTA02205655.pdf"
       // or href="https://www.justice.gov/epstein/files/DataSet%2011/EFTA02205655.pdf"
-      pdf_link_regex_(R"(href\s*=\s*["']([^"']*(?:DataSet%20(?:9|11)|DataSet(?:%20|\s)(?:9|11))[^"']*\.pdf)["'])",
-                      std::regex::icase | std::regex::optimize),
+      // Dynamic pattern based on current data set ID
+      pdf_link_regex_(build_pdf_regex(config.id), std::regex::icase | std::regex::optimize),
       // Match EFTA followed by digits
       file_id_regex_(R"(EFTA(\d{8}))", std::regex::optimize) {
+}
+
+std::string Scraper::build_pdf_regex(int data_set_id) {
+    // Build a regex that matches this specific data set's PDF links
+    // Handles both "DataSet%20X" and "DataSet X" formats
+    std::string id_str = std::to_string(data_set_id);
+    // Match href="...DataSet%20X/EFTA....pdf" or href="...DataSet X/EFTA....pdf"
+    return R"(href\s*=\s*["']([^"']*(?:DataSet(?:%20|\s))" + id_str + R"()[^"']*\.pdf)["'])";
 }
 
 std::vector<PdfLink> Scraper::extract_pdf_links(const std::string& html_content) {

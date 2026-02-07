@@ -16,11 +16,13 @@
 #include <QMutex>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <memory>
 #include <vector>
 #include <string>
 
 #include "efgrabber/download_manager.h"
+#include "browser_widget.h"
 
 namespace efgrabber {
 
@@ -54,18 +56,25 @@ private slots:
     void handlePageScraped(int page, int count);
     void handleDownloadComplete();
     void handleError(const QString& error);
+    void onBrowserPageReady(const QString& url, const QString& html);
+    void scrapeNextPage();
 
 private:
     void setupUi();
     void startDownload(int dataSet, OperationMode mode);
+    void startBrowserScraping(int dataSet);
     void stopDownload();
     void pauseDownload();
+    void processBrowserHtml(const QString& html);
     QString formatBytes(int64_t bytes) const;
     QString formatSpeed(double bps) const;
 
     // UI components
     QWidget* centralWidget_;
     QVBoxLayout* mainLayout_;
+    QTabWidget* tabWidget_;
+    QWidget* downloaderTab_;
+    BrowserWidget* browserWidget_;
 
     // Data set selector
     QComboBox* dataSetCombo_;
@@ -131,6 +140,13 @@ private:
     OperationMode selectedMode_;
     bool isRunning_;
     bool isPaused_;
+
+    // Browser scraping state
+    bool browserScrapingActive_;
+    int currentScrapePage_;
+    int maxScrapePage_;
+    int pdfFoundCount_;
+    QTimer* scrapeTimer_;
 
     // Thread-safe log queue
     QMutex logMutex_;

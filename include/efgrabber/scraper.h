@@ -44,6 +44,8 @@ public:
     const DataSetConfig& config() const { return config_; }
 
 private:
+    static std::string build_pdf_regex(int data_set_id);
+
     DataSetConfig config_;
     std::regex pdf_link_regex_;
     std::regex file_id_regex_;

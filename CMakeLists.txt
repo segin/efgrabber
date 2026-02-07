@@ -18,12 +18,22 @@ find_package(Threads REQUIRED)
 
 # Try Qt5
 find_package(Qt5 COMPONENTS Widgets QUIET)
+find_package(Qt5 COMPONENTS WebEngineWidgets QUIET)
 if(Qt5_FOUND)
     set(QT_FOUND TRUE)
     set(QT_LIBRARIES Qt5::Widgets)
     message(STATUS "Qt5 found - GUI will be built")
+    if(Qt5WebEngineWidgets_FOUND)
+        set(QT_WEBENGINE_FOUND TRUE)
+        list(APPEND QT_LIBRARIES Qt5::WebEngineWidgets)
+        message(STATUS "Qt5 WebEngine found - browser integration enabled")
+    else()
+        set(QT_WEBENGINE_FOUND FALSE)
+        message(STATUS "Qt5 WebEngine not found - browser integration disabled")
+    endif()
 else()
     set(QT_FOUND FALSE)
+    set(QT_WEBENGINE_FOUND FALSE)
     message(STATUS "Qt5 not found - only CLI will be built")
     message(STATUS "  Install Qt5: sudo apt install qtbase5-dev")
 endif()
@@ -77,6 +87,8 @@ if(BUILD_GUI)
     set(GUI_SOURCES
         src/gui/main_window_qt.cpp
         src/gui/main_window_qt.h
+        src/gui/browser_widget.cpp
+        src/gui/browser_widget.h
     )
 
     add_executable(efgrabber
@@ -95,6 +107,10 @@ if(BUILD_GUI)
     target_compile_options(efgrabber PRIVATE
         -Wall -Wextra -Wpedantic
     )
+
+    if(QT_WEBENGINE_FOUND)
+        target_compile_definitions(efgrabber PRIVATE HAVE_WEBENGINE=1)
+    endif()
 
     install(TARGETS efgrabber
         RUNTIME DESTINATION bin

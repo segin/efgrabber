@@ -85,6 +85,43 @@ void DownloadManager::start(const DataSetConfig& config, OperationMode mode) {
     std::thread(&DownloadManager::download_worker, this).detach();
 }
 
+void DownloadManager::start_download_only(const DataSetConfig& config) {
+    if (running_) {
+        log("Already running");
+        return;
+    }
+
+    current_config_ = config;
+    current_mode_ = OperationMode::SCRAPER;  // Pretend scraper mode but don't start scraper
+    running_ = true;
+    paused_ = false;
+    stop_requested_ = false;
+
+    // Reset stats
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_ = DownloadStats{};
+        stats_.start_time = std::chrono::system_clock::now();
+    }
+
+    start_time_ = std::chrono::steady_clock::now();
+    bytes_this_session_ = 0;
+
+    // Create scraper (needed for file URL building)
+    scraper_ = std::make_unique<Scraper>(config);
+
+    // Create download pool only
+    download_pool_ = std::make_unique<ThreadPool>(max_concurrent_downloads_);
+
+    log("Starting download-only mode for " + config.name);
+
+    // Start stats update thread
+    stats_thread_ = std::thread(&DownloadManager::stats_worker, this);
+
+    // Start download worker - it will wait for files to be added to the queue
+    std::thread(&DownloadManager::download_worker, this).detach();
+}
+
 void DownloadManager::stop() {
     if (!running_) return;
 
@@ -159,6 +196,28 @@ void DownloadManager::set_cookie_file(const std::string& cookie_file) {
     cookie_file_ = cookie_file;
 }
 
+void DownloadManager::set_cookie_string(const std::string& cookies) {
+    cookie_string_ = cookies;
+}
+
+void DownloadManager::add_file_to_queue(const std::string& file_id, const std::string& url, const std::string& local_path) {
+    if (!db_) return;
+
+    // Check if file already exists in database
+    if (db_->file_exists(file_id, current_config_.id)) {
+        return;  // Already queued or downloaded
+    }
+
+    FileRecord record;
+    record.data_set = current_config_.id;
+    record.file_id = file_id;
+    record.url = url;
+    record.local_path = local_path;
+    record.status = DownloadStatus::PENDING;
+
+    db_->add_file(record);
+}
+
 void DownloadManager::scraper_worker() {
     log("Scraper worker started");
 
@@ -170,7 +229,9 @@ void DownloadManager::scraper_worker() {
     int high = 100000;  // Start with a high upper bound
 
     Downloader probe_downloader;
-    if (!cookie_file_.empty()) {
+    if (!cookie_string_.empty()) {
+        probe_downloader.set_cookie(cookie_string_);
+    } else if (!cookie_file_.empty()) {
         probe_downloader.set_cookie_file(cookie_file_);
     }
 
@@ -398,7 +459,9 @@ void DownloadManager::stats_worker() {
 
 void DownloadManager::scrape_page(int page_number) {
     Downloader downloader;
-    if (!cookie_file_.empty()) {
+    if (!cookie_string_.empty()) {
+        downloader.set_cookie(cookie_string_);
+    } else if (!cookie_file_.empty()) {
         downloader.set_cookie_file(cookie_file_);
     }
     std::string url = scraper_->build_page_url(page_number);
@@ -454,7 +517,9 @@ void DownloadManager::download_file(const FileRecord& file) {
     fs::create_directories(filepath.parent_path());
 
     Downloader downloader;
-    if (!cookie_file_.empty()) {
+    if (!cookie_string_.empty()) {
+        downloader.set_cookie(cookie_string_);
+    } else if (!cookie_file_.empty()) {
         downloader.set_cookie_file(cookie_file_);
     }
     auto result = downloader.download_to_file(file.url, file.local_path);
