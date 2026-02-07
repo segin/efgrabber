@@ -9,7 +9,7 @@
 #include <QProgressBar>
 #include <QLabel>
 #include <QPushButton>
-#include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QGroupBox>
 #include <QGridLayout>
 #include <QTimer>
@@ -17,9 +17,11 @@
 #include <QLineEdit>
 #include <QSpinBox>
 #include <QTabWidget>
+#include <QElapsedTimer>
 #include <memory>
 #include <vector>
 #include <string>
+#include <atomic>
 
 #include "efgrabber/download_manager.h"
 #include "browser_widget.h"
@@ -58,6 +60,7 @@ private slots:
     void handleError(const QString& error);
     void onBrowserPageReady(const QString& url, const QString& html);
     void scrapeNextPage();
+    void flushPendingLogs();
 
 private:
     void setupUi();
@@ -68,6 +71,8 @@ private:
     void processBrowserHtml(const QString& html);
     QString formatBytes(int64_t bytes) const;
     QString formatSpeed(double bps) const;
+    void updateProgressBar(QProgressBar* bar, int value);
+    void updateLabel(QLabel* label, const QString& text);
 
     // UI components
     QWidget* centralWidget_;
@@ -119,9 +124,9 @@ private:
     QLabel* speedLabel_;
     QLabel* bytesLabel_;
 
-    // Log view
+    // Log view - using QPlainTextEdit for performance
     QGroupBox* logGroup_;
-    QTextEdit* logView_;
+    QPlainTextEdit* logView_;
 
     // Control buttons
     QHBoxLayout* controlsLayout_;
@@ -132,25 +137,38 @@ private:
     // Download manager
     std::unique_ptr<DownloadManager> downloadManager_;
 
-    // Timer for UI updates
+    // Timers
     QTimer* statsTimer_;
+    QTimer* logFlushTimer_;
 
     // State
     int selectedDataSet_;
     OperationMode selectedMode_;
-    bool isRunning_;
-    bool isPaused_;
+    std::atomic<bool> isRunning_;
+    std::atomic<bool> isPaused_;
 
     // Browser scraping state
-    bool browserScrapingActive_;
-    int currentScrapePage_;
+    std::atomic<bool> browserScrapingActive_;
+    std::atomic<int> currentScrapePage_;
     int maxScrapePage_;
-    int pdfFoundCount_;
+    std::atomic<int> pdfFoundCount_;
     QTimer* scrapeTimer_;
+    QSet<QString> seenFileIds_;  // Track seen IDs to detect duplicate pages
+    int consecutiveDuplicatePages_;  // Count pages with no new PDFs
 
-    // Thread-safe log queue
+    // Cached label values for change detection
+    QString lastOverallLabel_;
+    QString lastScraperLabel_;
+    QString lastBruteForceLabel_;
+    int lastOverallProgress_ = -1;
+    int lastScraperProgress_ = -1;
+    int lastBruteForceProgress_ = -1;
+
+    // Log batching
     QMutex logMutex_;
-    std::vector<std::string> pendingLogs_;
+    QStringList pendingLogs_;
+    static constexpr int MAX_LOG_LINES = 500;
+    static constexpr int LOG_FLUSH_INTERVAL_MS = 100;
 };
 
 } // namespace efgrabber

@@ -30,16 +30,23 @@ MainWindow::MainWindow(QWidget* parent)
 
     setupUi();
 
-    // Connect signals
+    // Connect signals with queued connections for thread safety
     connect(this, &MainWindow::logMessageReceived, this, &MainWindow::appendLog, Qt::QueuedConnection);
     connect(this, &MainWindow::statsReceived, this, &MainWindow::updateStats, Qt::QueuedConnection);
     connect(this, &MainWindow::pageScraped, this, &MainWindow::handlePageScraped, Qt::QueuedConnection);
     connect(this, &MainWindow::downloadComplete, this, &MainWindow::handleDownloadComplete, Qt::QueuedConnection);
     connect(this, &MainWindow::errorOccurred, this, &MainWindow::handleError, Qt::QueuedConnection);
 
-    // Stats timer for periodic UI updates
+    // Stats timer - update every 2 seconds to reduce CPU usage
     statsTimer_ = new QTimer(this);
+    statsTimer_->setTimerType(Qt::CoarseTimer);
     connect(statsTimer_, &QTimer::timeout, this, &MainWindow::onStatsTimer);
+
+    // Log flush timer for batched log updates
+    logFlushTimer_ = new QTimer(this);
+    logFlushTimer_->setTimerType(Qt::CoarseTimer);
+    connect(logFlushTimer_, &QTimer::timeout, this, &MainWindow::flushPendingLogs);
+    logFlushTimer_->start(LOG_FLUSH_INTERVAL_MS);
 }
 
 MainWindow::~MainWindow() {
@@ -62,7 +69,7 @@ void MainWindow::setupUi() {
     downloaderTab_ = new QWidget();
     QVBoxLayout* downloaderLayout = new QVBoxLayout(downloaderTab_);
     downloaderLayout->setContentsMargins(6, 6, 6, 6);
-    downloaderLayout->setSpacing(12);
+    downloaderLayout->setSpacing(8);
 
     // Data set selector
     QHBoxLayout* dataSetLayout = new QHBoxLayout();
@@ -140,44 +147,36 @@ void MainWindow::setupUi() {
     overallLayout->addWidget(overallLabel_);
     downloaderLayout->addWidget(overallGroup_);
 
-    // Stats grid
+    // Stats grid - compact layout
     statsGroup_ = new QGroupBox("Statistics");
     statsGrid_ = new QGridLayout(statsGroup_);
-    statsGrid_->setColumnStretch(1, 1);
-    statsGrid_->setColumnStretch(3, 1);
-    statsGrid_->setColumnStretch(5, 1);
 
     int row = 0;
     statsGrid_->addWidget(new QLabel("Completed:"), row, 0);
     completedLabel_ = new QLabel("0");
     statsGrid_->addWidget(completedLabel_, row, 1);
-
     statsGrid_->addWidget(new QLabel("Failed:"), row, 2);
     failedLabel_ = new QLabel("0");
     statsGrid_->addWidget(failedLabel_, row, 3);
-
     statsGrid_->addWidget(new QLabel("Pending:"), row, 4);
     pendingLabel_ = new QLabel("0");
     statsGrid_->addWidget(pendingLabel_, row, 5);
 
     row++;
-    statsGrid_->addWidget(new QLabel("Not Found:"), row, 0);
+    statsGrid_->addWidget(new QLabel("404:"), row, 0);
     notFoundLabel_ = new QLabel("0");
     statsGrid_->addWidget(notFoundLabel_, row, 1);
-
     statsGrid_->addWidget(new QLabel("Active:"), row, 2);
     activeLabel_ = new QLabel("0");
     statsGrid_->addWidget(activeLabel_, row, 3);
-
-    statsGrid_->addWidget(new QLabel("Pages:"), row, 4);
-    pagesLabel_ = new QLabel("0");
-    statsGrid_->addWidget(pagesLabel_, row, 5);
+    statsGrid_->addWidget(new QLabel("Speed:"), row, 4);
+    speedLabel_ = new QLabel("0 B/s");
+    statsGrid_->addWidget(speedLabel_, row, 5);
 
     row++;
-    statsGrid_->addWidget(new QLabel("Speed:"), row, 0);
-    speedLabel_ = new QLabel("0 B/s");
-    statsGrid_->addWidget(speedLabel_, row, 1);
-
+    statsGrid_->addWidget(new QLabel("Pages:"), row, 0);
+    pagesLabel_ = new QLabel("0");
+    statsGrid_->addWidget(pagesLabel_, row, 1);
     statsGrid_->addWidget(new QLabel("Downloaded:"), row, 2);
     bytesLabel_ = new QLabel("0 B");
     statsGrid_->addWidget(bytesLabel_, row, 3);
@@ -204,13 +203,15 @@ void MainWindow::setupUi() {
     bfLayout->addWidget(bruteForceLabel_);
     downloaderLayout->addWidget(bruteForceGroup_);
 
-    // Log view
+    // Log view - using QPlainTextEdit for better performance
     logGroup_ = new QGroupBox("Log");
     QVBoxLayout* logLayout = new QVBoxLayout(logGroup_);
-    logView_ = new QTextEdit();
+    logView_ = new QPlainTextEdit();
     logView_->setReadOnly(true);
     logView_->setFont(QFont("Monospace", 9));
-    logView_->setMinimumHeight(150);
+    logView_->setMaximumBlockCount(MAX_LOG_LINES);  // Auto-trim old lines
+    logView_->setLineWrapMode(QPlainTextEdit::NoWrap);
+    logView_->setMinimumHeight(120);
     logLayout->addWidget(logView_);
     downloaderLayout->addWidget(logGroup_);
 
@@ -244,27 +245,22 @@ void MainWindow::setupUi() {
     browserWidget_ = new BrowserWidget();
     tabWidget_->addTab(browserWidget_, "Browser");
 
-    // Connect browser signals - cookies are transferred automatically
+    // Connect browser signals
     connect(browserWidget_, &BrowserWidget::cookiesChanged, this, [this]() {
         if (browserWidget_->hasCookiesFor("justice.gov")) {
             statusBar()->showMessage("Cookies updated from browser", 3000);
         }
     });
 
-    connect(browserWidget_, &BrowserWidget::pdfLinkFound, this, [this](const QString& fileId, const QString&) {
-        appendLog("Found PDF: " + fileId);
-    });
-
-    // Connect browser page ready for scraping
     connect(browserWidget_, &BrowserWidget::pageHtmlReady,
             this, &MainWindow::onBrowserPageReady);
 
     // Timer for pacing browser scraping
     scrapeTimer_ = new QTimer(this);
     scrapeTimer_->setSingleShot(true);
+    scrapeTimer_->setTimerType(Qt::CoarseTimer);
     connect(scrapeTimer_, &QTimer::timeout, this, &MainWindow::scrapeNextPage);
 
-    // Add status bar
     statusBar()->showMessage("Browse to justice.gov to get cookies, then start download");
 }
 
@@ -282,7 +278,6 @@ void MainWindow::onPauseClicked() {
 
 void MainWindow::onDataSetChanged(int index) {
     selectedDataSet_ = dataSetCombo_->itemData(index).toInt();
-    // Update brute force range for this data set
     auto config = get_data_set_config(selectedDataSet_);
     startIdSpin_->setValue(static_cast<int>(config.first_file_id));
     endIdSpin_->setValue(static_cast<int>(config.last_file_id));
@@ -311,14 +306,14 @@ void MainWindow::onModeChanged(int index) {
 }
 
 void MainWindow::onStatsTimer() {
-    if (downloadManager_ && isRunning_) {
+    if (downloadManager_ && isRunning_.load()) {
         DownloadStats stats = downloadManager_->get_stats();
         emit statsReceived(stats);
     }
 }
 
 void MainWindow::startDownload(int dataSet, OperationMode mode) {
-    if (isRunning_) return;
+    if (isRunning_.load()) return;
 
     QString downloadDir = downloadPathEdit_->text();
     if (downloadDir.isEmpty()) {
@@ -333,16 +328,14 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
         return;
     }
 
-    // First, try to use cookies from the browser
+    // Use cookies from browser or file
     if (browserWidget_->hasCookiesFor("justice.gov")) {
         QString browserCookies = browserWidget_->getCookieString("justice.gov");
         if (!browserCookies.isEmpty()) {
             downloadManager_->set_cookie_string(browserCookies.toStdString());
             appendLog("Using cookies from browser session");
         }
-    }
-    // Fall back to cookie file if specified and no browser cookies
-    else {
+    } else {
         QString cookieFile = cookieFileEdit_->text();
         if (!cookieFile.isEmpty()) {
             downloadManager_->set_cookie_file(cookieFile.toStdString());
@@ -352,36 +345,29 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
 
     // Set callbacks
     DownloadCallbacks callbacks;
-
     callbacks.on_log_message = [this](const std::string& message) {
         emit logMessageReceived(QString::fromStdString(message));
     };
-
     callbacks.on_stats_update = [this](const DownloadStats& stats) {
         emit statsReceived(stats);
     };
-
     callbacks.on_page_scraped = [this](int page, int count) {
         emit pageScraped(page, count);
     };
-
     callbacks.on_complete = [this]() {
         emit downloadComplete();
     };
-
     callbacks.on_error = [this](const std::string& error) {
         emit errorOccurred(QString::fromStdString(error));
     };
-
     downloadManager_->set_callbacks(callbacks);
 
-    // Get config with user-specified brute force range
     DataSetConfig config = get_data_set_config(dataSet);
     config.first_file_id = static_cast<uint64_t>(startIdSpin_->value());
     config.last_file_id = static_cast<uint64_t>(endIdSpin_->value());
 
-    isRunning_ = true;
-    isPaused_ = false;
+    isRunning_.store(true);
+    isPaused_.store(false);
 
     startButton_->setEnabled(false);
     stopButton_->setEnabled(true);
@@ -389,38 +375,65 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     dataSetCombo_->setEnabled(false);
     modeCombo_->setEnabled(false);
 
-    statsTimer_->start(1000);
+    statsTimer_->start(2000);  // Update stats every 2 seconds
 
-    // For scraper mode, use browser-based scraping to bypass Akamai
+    // Use browser-based scraping for scraper mode
     if (mode == OperationMode::SCRAPER || mode == OperationMode::HYBRID) {
-        appendLog("Using browser-based scraping to bypass Akamai bot protection");
+        appendLog("Using browser-based scraping to bypass Akamai");
         startBrowserScraping(dataSet);
     }
 
-    // For brute force, start the download manager directly
     if (mode == OperationMode::BRUTE_FORCE || mode == OperationMode::HYBRID) {
         downloadManager_->start(config, mode);
         appendLog(QString("Started downloading %1").arg(QString::fromStdString(config.name)));
     }
 }
 
-void MainWindow::stopDownload() {
-    if (!isRunning_) return;
+void MainWindow::startBrowserScraping(int dataSet) {
+    browserScrapingActive_.store(true);
+    currentScrapePage_.store(0);
+    pdfFoundCount_.store(0);
+    seenFileIds_.clear();
+    consecutiveDuplicatePages_ = 0;
 
-    // Stop browser scraping
-    browserScrapingActive_ = false;
-    if (scrapeTimer_) {
-        scrapeTimer_->stop();
+    appendLog(QString("Starting browser-based scraping for Data Set %1").arg(dataSet));
+
+    auto config = get_data_set_config(dataSet);
+    downloadManager_->start_download_only(config);
+
+    scrapeNextPage();
+}
+
+void MainWindow::scrapeNextPage() {
+    if (!browserScrapingActive_.load() || !isRunning_.load()) return;
+
+    auto config = get_data_set_config(selectedDataSet_);
+    int page = currentScrapePage_.load();
+    QString url;
+    if (page == 0) {
+        url = QString::fromStdString(config.base_url);
+    } else {
+        url = QString::fromStdString(config.base_url) + "?page=" + QString::number(page);
     }
 
+    updateLabel(scraperLabel_, QString("Fetching page %1...").arg(page));
+    browserWidget_->fetchPageForScraping(url);
+}
+
+void MainWindow::stopDownload() {
+    if (!isRunning_.load()) return;
+
+    browserScrapingActive_.store(false);
+    if (scrapeTimer_) scrapeTimer_->stop();
     statsTimer_->stop();
+
     if (downloadManager_) {
         downloadManager_->stop();
         downloadManager_.reset();
     }
 
-    isRunning_ = false;
-    isPaused_ = false;
+    isRunning_.store(false);
+    isPaused_.store(false);
 
     startButton_->setEnabled(true);
     stopButton_->setEnabled(false);
@@ -433,16 +446,16 @@ void MainWindow::stopDownload() {
 }
 
 void MainWindow::pauseDownload() {
-    if (!isRunning_ || !downloadManager_) return;
+    if (!isRunning_.load() || !downloadManager_) return;
 
-    if (isPaused_) {
+    if (isPaused_.load()) {
         downloadManager_->resume();
-        isPaused_ = false;
+        isPaused_.store(false);
         pauseButton_->setText("Pause");
         appendLog("Download resumed");
     } else {
         downloadManager_->pause();
-        isPaused_ = true;
+        isPaused_.store(true);
         pauseButton_->setText("Resume");
         appendLog("Download paused");
     }
@@ -450,67 +463,184 @@ void MainWindow::pauseDownload() {
 
 void MainWindow::appendLog(const QString& message) {
     QString timestamp = QDateTime::currentDateTime().toString("[HH:mm:ss] ");
+    QMutexLocker locker(&logMutex_);
+    pendingLogs_.append(timestamp + message);
+}
 
-    // Limit log size to prevent memory bloat
-    if (logView_->document()->blockCount() > 1000) {
-        QTextCursor cursor = logView_->textCursor();
-        cursor.movePosition(QTextCursor::Start);
-        cursor.movePosition(QTextCursor::Down, QTextCursor::KeepAnchor, 100);
-        cursor.removeSelectedText();
+void MainWindow::flushPendingLogs() {
+    QStringList logs;
+    {
+        QMutexLocker locker(&logMutex_);
+        if (pendingLogs_.isEmpty()) return;
+        logs.swap(pendingLogs_);
     }
 
-    logView_->append(timestamp + message);
+    // Batch append all logs at once
+    logView_->setUpdatesEnabled(false);
+    for (const QString& log : logs) {
+        logView_->appendPlainText(log);
+    }
+    logView_->setUpdatesEnabled(true);
 
     // Scroll to bottom
     QScrollBar* scrollBar = logView_->verticalScrollBar();
     scrollBar->setValue(scrollBar->maximum());
 }
 
+void MainWindow::updateProgressBar(QProgressBar* bar, int value) {
+    if (bar->value() != value) {
+        bar->setValue(value);
+    }
+}
+
+void MainWindow::updateLabel(QLabel* label, const QString& text) {
+    if (label->text() != text) {
+        label->setText(text);
+    }
+}
+
 void MainWindow::updateStats(const DownloadStats& stats) {
-    // Overall progress
+    // Only update if values changed
     int64_t total = stats.files_completed + stats.files_failed + stats.files_pending +
                    stats.files_in_progress + stats.files_not_found;
     int progress = total > 0 ? static_cast<int>(100 * stats.files_completed / total) : 0;
-    overallProgress_->setValue(progress);
 
-    overallLabel_->setText(QString("%1 / %2 files (%3%)")
-        .arg(stats.files_completed)
-        .arg(total)
-        .arg(progress));
+    updateProgressBar(overallProgress_, progress);
 
-    // Stats labels
-    completedLabel_->setText(QString::number(stats.files_completed));
-    failedLabel_->setText(QString::number(stats.files_failed));
-    pendingLabel_->setText(QString::number(stats.files_pending));
-    notFoundLabel_->setText(QString::number(stats.files_not_found));
-    activeLabel_->setText(QString::number(stats.files_in_progress));
-    pagesLabel_->setText(QString::number(stats.pages_scraped));
-    speedLabel_->setText(formatSpeed(stats.current_speed_bps));
-    bytesLabel_->setText(formatBytes(stats.bytes_downloaded));
+    QString overallText = QString("%1 / %2 files (%3%)")
+        .arg(stats.files_completed).arg(total).arg(progress);
+    updateLabel(overallLabel_, overallText);
+
+    // Stats labels - only update if changed
+    updateLabel(completedLabel_, QString::number(stats.files_completed));
+    updateLabel(failedLabel_, QString::number(stats.files_failed));
+    updateLabel(pendingLabel_, QString::number(stats.files_pending));
+    updateLabel(notFoundLabel_, QString::number(stats.files_not_found));
+    updateLabel(activeLabel_, QString::number(stats.files_in_progress));
+    updateLabel(pagesLabel_, QString::number(stats.pages_scraped));
+    updateLabel(speedLabel_, formatSpeed(stats.current_speed_bps));
+    updateLabel(bytesLabel_, formatBytes(stats.bytes_downloaded));
 
     // Scraper progress
     if (stats.total_pages > 0) {
         int scraperPct = static_cast<int>(100 * stats.pages_scraped / stats.total_pages);
-        scraperProgress_->setValue(scraperPct);
-        scraperLabel_->setText(QString("%1 / %2 pages scraped (%3 PDFs found)")
-            .arg(stats.pages_scraped)
-            .arg(stats.total_pages)
-            .arg(stats.total_files_found));
+        updateProgressBar(scraperProgress_, scraperPct);
+        updateLabel(scraperLabel_, QString("%1 / %2 pages (%3 PDFs)")
+            .arg(stats.pages_scraped).arg(stats.total_pages).arg(stats.total_files_found));
     }
 
     // Brute force progress
     if (stats.brute_force_end > stats.brute_force_start) {
         uint64_t range = stats.brute_force_end - stats.brute_force_start;
         uint64_t done = stats.brute_force_current - stats.brute_force_start;
-        double bfPct = 100.0 * done / range;
-        bruteForceProgress_->setValue(static_cast<int>(bfPct));
+        int bfPct = static_cast<int>(100.0 * done / range);
+        updateProgressBar(bruteForceProgress_, bfPct);
 
-        std::ostringstream oss;
-        oss << "EFTA" << std::setw(8) << std::setfill('0') << stats.brute_force_current
-            << " - " << std::fixed << std::setprecision(2) << bfPct << "%"
-            << " (" << done << " / " << range << ")";
-        bruteForceLabel_->setText(QString::fromStdString(oss.str()));
+        QString bfText = QString("EFTA%1 - %2% (%3 / %4)")
+            .arg(stats.brute_force_current, 8, 10, QChar('0'))
+            .arg(bfPct)
+            .arg(done)
+            .arg(range);
+        updateLabel(bruteForceLabel_, bfText);
     }
+}
+
+void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
+    Q_UNUSED(url);
+    if (!browserScrapingActive_.load()) return;
+
+    // Process in background thread
+    auto config = get_data_set_config(selectedDataSet_);
+    int dataSet = selectedDataSet_;
+    QString downloadPath = downloadPathEdit_->text();
+    int currentPage = currentScrapePage_.load();
+
+    // Copy seen IDs for thread safety
+    QSet<QString> seenCopy = seenFileIds_;
+
+    QtConcurrent::run([this, html, config, dataSet, downloadPath, currentPage, seenCopy]() mutable {
+        int newPdfCount = 0;
+        int totalOnPage = 0;
+        QRegularExpression re(R"(EFTA(\d{8}))", QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatchIterator it = re.globalMatch(html);
+
+        QSet<QString> pageIds;
+        std::vector<std::tuple<std::string, std::string, std::string>> filesToAdd;
+
+        while (it.hasNext()) {
+            QRegularExpressionMatch match = it.next();
+            QString fileId = "EFTA" + match.captured(1);
+
+            if (!pageIds.contains(fileId)) {
+                pageIds.insert(fileId);
+                totalOnPage++;
+
+                // Only count as new if we haven't seen this ID before
+                if (!seenCopy.contains(fileId)) {
+                    newPdfCount++;
+
+                    std::string stdFileId = fileId.toStdString();
+                    std::string fileUrl = config.file_url_base + stdFileId + ".pdf";
+                    std::string subdir = stdFileId.substr(4, 3);
+                    std::string localPath = downloadPath.toStdString() +
+                        "/DataSet" + std::to_string(dataSet) + "/" +
+                        subdir + "/" + stdFileId + ".pdf";
+
+                    filesToAdd.emplace_back(stdFileId, fileUrl, localPath);
+                }
+            }
+        }
+
+        if (downloadManager_ && !filesToAdd.empty()) {
+            downloadManager_->add_files_to_queue(filesToAdd);
+        }
+
+        // Update UI on main thread
+        QMetaObject::invokeMethod(this, [this, newPdfCount, totalOnPage, currentPage, pageIds]() {
+            if (!browserScrapingActive_.load()) return;
+
+            // Add new IDs to seen set
+            seenFileIds_.unite(pageIds);
+
+            int newTotal = pdfFoundCount_.fetch_add(newPdfCount) + newPdfCount;
+
+            if (newPdfCount == 0 && totalOnPage > 0) {
+                // Page had PDFs but all were duplicates
+                consecutiveDuplicatePages_++;
+                appendLog(QString("Page %1: %2 PDFs (all duplicates, streak: %3)")
+                    .arg(currentPage).arg(totalOnPage).arg(consecutiveDuplicatePages_));
+
+                if (consecutiveDuplicatePages_ >= 3) {
+                    appendLog(QString("Scraping complete! %1 unique PDFs found (3 duplicate pages in a row)")
+                        .arg(newTotal));
+                    browserScrapingActive_.store(false);
+                    return;
+                }
+            } else if (newPdfCount > 0) {
+                consecutiveDuplicatePages_ = 0;
+                appendLog(QString("Page %1: %2 new PDFs (total: %3)")
+                    .arg(currentPage).arg(newPdfCount).arg(newTotal));
+            } else {
+                // No PDFs at all on page
+                appendLog(QString("Page %1: no PDFs found").arg(currentPage));
+                appendLog(QString("Scraping complete! %1 unique PDFs found").arg(newTotal));
+                browserScrapingActive_.store(false);
+                return;
+            }
+
+            updateProgressBar(scraperProgress_, currentPage % 100);
+            updateLabel(scraperLabel_, QString("Page %1 - %2 PDFs found")
+                .arg(currentPage).arg(newTotal));
+
+            int nextPage = currentScrapePage_.fetch_add(1) + 1;
+            if (nextPage < maxScrapePage_) {
+                scrapeTimer_->start(1500);
+            } else {
+                appendLog("Reached max page limit");
+                browserScrapingActive_.store(false);
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 void MainWindow::handlePageScraped(int page, int count) {
@@ -526,8 +656,12 @@ void MainWindow::handleError(const QString& error) {
     appendLog("ERROR: " + error);
 }
 
+void MainWindow::processBrowserHtml(const QString& html) {
+    Q_UNUSED(html);
+}
+
 QString MainWindow::formatBytes(int64_t bytes) const {
-    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    static const char* units[] = {"B", "KB", "MB", "GB", "TB"};
     int unitIndex = 0;
     double value = static_cast<double>(bytes);
 
@@ -536,131 +670,11 @@ QString MainWindow::formatBytes(int64_t bytes) const {
         unitIndex++;
     }
 
-    return QString("%1 %2").arg(value, 0, 'f', 2).arg(units[unitIndex]);
+    return QString("%1 %2").arg(value, 0, 'f', 1).arg(units[unitIndex]);
 }
 
 QString MainWindow::formatSpeed(double bps) const {
     return formatBytes(static_cast<int64_t>(bps)) + "/s";
-}
-
-void MainWindow::startBrowserScraping(int dataSet) {
-    browserScrapingActive_ = true;
-    currentScrapePage_ = 0;
-    pdfFoundCount_ = 0;
-
-    appendLog(QString("Starting browser-based scraping for Data Set %1").arg(dataSet));
-    appendLog("Using embedded browser to bypass Akamai bot protection...");
-
-    // Set up the config for this data set
-    auto config = get_data_set_config(dataSet);
-
-    // Start the download manager in download-only mode
-    // It will wait for files to be added via browser scraping
-    downloadManager_->start_download_only(config);
-
-    // Start with first page
-    scrapeNextPage();
-}
-
-void MainWindow::scrapeNextPage() {
-    if (!browserScrapingActive_ || !isRunning_) return;
-
-    auto config = get_data_set_config(selectedDataSet_);
-    QString url;
-    if (currentScrapePage_ == 0) {
-        url = QString::fromStdString(config.base_url);
-    } else {
-        url = QString::fromStdString(config.base_url) + "?page=" + QString::number(currentScrapePage_);
-    }
-
-    scraperLabel_->setText(QString("Fetching page %1...").arg(currentScrapePage_));
-    browserWidget_->fetchPageForScraping(url);
-}
-
-void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
-    Q_UNUSED(url);
-    if (!browserScrapingActive_) return;
-
-    // Process HTML in a background thread to avoid blocking UI
-    auto config = get_data_set_config(selectedDataSet_);
-    int dataSet = selectedDataSet_;
-    QString downloadPath = downloadPathEdit_->text();
-
-    QtConcurrent::run([this, html, config, dataSet, downloadPath]() {
-        // Parse HTML for PDF links (runs in background)
-        int pdfCount = 0;
-        QRegularExpression re(R"(EFTA(\d{8}))", QRegularExpression::CaseInsensitiveOption);
-        QRegularExpressionMatchIterator it = re.globalMatch(html);
-
-        QSet<QString> uniqueIds;
-        std::vector<std::tuple<std::string, std::string, std::string>> filesToAdd;
-
-        while (it.hasNext()) {
-            QRegularExpressionMatch match = it.next();
-            QString fileId = "EFTA" + match.captured(1);
-            if (!uniqueIds.contains(fileId)) {
-                uniqueIds.insert(fileId);
-                pdfCount++;
-
-                std::string stdFileId = fileId.toStdString();
-                std::string fileUrl = config.file_url_base + stdFileId + ".pdf";
-                std::string subdir = stdFileId.substr(4, 3);
-                std::string localPath = downloadPath.toStdString() +
-                    "/DataSet" + std::to_string(dataSet) + "/" +
-                    subdir + "/" + stdFileId + ".pdf";
-
-                filesToAdd.emplace_back(stdFileId, fileUrl, localPath);
-            }
-        }
-
-        // Add files to download queue in batch (still in background)
-        if (downloadManager_ && !filesToAdd.empty()) {
-            downloadManager_->add_files_to_queue(filesToAdd);
-        }
-
-        // Update UI on main thread
-        QMetaObject::invokeMethod(this, [this, pdfCount]() {
-            if (!browserScrapingActive_) return;
-
-            pdfFoundCount_ += pdfCount;
-            appendLog(QString("Page %1: found %2 PDFs (total: %3)")
-                .arg(currentScrapePage_).arg(pdfCount).arg(pdfFoundCount_));
-
-            scraperProgress_->setValue(currentScrapePage_ % 100);
-            scraperLabel_->setText(QString("Page %1 scraped - %2 PDFs found total")
-                .arg(currentScrapePage_).arg(pdfFoundCount_));
-
-            // Check if we should continue
-            if (pdfCount == 0 && currentScrapePage_ > 0) {
-                appendLog(QString("Scraping complete! Found %1 PDFs across %2 pages")
-                    .arg(pdfFoundCount_).arg(currentScrapePage_));
-                browserScrapingActive_ = false;
-                return;
-            }
-
-            // Continue to next page
-            currentScrapePage_++;
-            if (currentScrapePage_ < maxScrapePage_) {
-                scrapeTimer_->start(1500);  // 1.5 second delay
-            } else {
-                appendLog("Reached max page limit");
-                browserScrapingActive_ = false;
-            }
-        }, Qt::QueuedConnection);
-    });
-}
-
-void MainWindow::processBrowserHtml(const QString& html) {
-    // Extract PDF links from HTML and add to download queue
-    QRegularExpression re(R"(href\s*=\s*["']([^"']*EFTA\d{8}[^"']*\.pdf)["'])",
-                          QRegularExpression::CaseInsensitiveOption);
-    QRegularExpressionMatchIterator it = re.globalMatch(html);
-
-    while (it.hasNext()) {
-        QRegularExpressionMatch match = it.next();
-        QString href = match.captured(1);
-        appendLog("Found: " + href);
-    }
 }
 
 } // namespace efgrabber

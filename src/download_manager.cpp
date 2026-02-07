@@ -532,7 +532,7 @@ void DownloadManager::scrape_page(int page_number) {
 }
 
 void DownloadManager::download_file(const FileRecord& file) {
-    // Check if file already exists locally
+    // Check if file already exists locally and has content
     if (fs::exists(file.local_path) && fs::file_size(file.local_path) > 0) {
         db_->update_file_status(file.id, DownloadStatus::SKIPPED);
         return;
@@ -551,8 +551,13 @@ void DownloadManager::download_file(const FileRecord& file) {
     auto result = downloader.download_to_file(file.url, file.local_path);
 
     if (result.http_code == 404) {
+        // Delete empty file if created
+        if (fs::exists(file.local_path)) {
+            fs::remove(file.local_path);
+        }
         db_->update_file_status(file.id, DownloadStatus::NOT_FOUND, "404 Not Found");
-    } else if (result.success) {
+    } else if (result.success && result.content_length > 0) {
+        // Success - non-empty response
         bytes_this_session_ += result.content_length;
         db_->update_file_status(file.id, DownloadStatus::COMPLETED, "", result.content_length);
 
@@ -560,7 +565,17 @@ void DownloadManager::download_file(const FileRecord& file) {
         if (callbacks_.on_file_status_change) {
             callbacks_.on_file_status_change(file.file_id, DownloadStatus::COMPLETED);
         }
+    } else if (result.success && result.content_length == 0) {
+        // Empty response - delete and mark not found
+        if (fs::exists(file.local_path)) {
+            fs::remove(file.local_path);
+        }
+        db_->update_file_status(file.id, DownloadStatus::NOT_FOUND, "Empty response");
     } else {
+        // Download failed - delete empty file
+        if (fs::exists(file.local_path)) {
+            fs::remove(file.local_path);
+        }
         db_->increment_retry_count(file.id);
         db_->update_file_status(file.id, DownloadStatus::FAILED, result.error_message);
 
