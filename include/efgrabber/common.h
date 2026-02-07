@@ -62,43 +62,42 @@ inline DataSetConfig get_data_set_config(int id) {
             config.last_file_id = 5586;      // EFTA00005586
             break;
         case 4:
-            config.first_file_id = 5705;     // EFTA00005705 (note: gap from DS3)
+            config.first_file_id = 5705;     // EFTA00005705 (gap from DS3)
             config.last_file_id = 8320;      // EFTA00008320
             break;
         case 5:
             config.first_file_id = 8409;     // EFTA00008409
-            config.last_file_id = 8528;      // Up to DS6 start
+            config.last_file_id = 8528;      // EFTA00008528
             break;
         case 6:
             config.first_file_id = 8529;     // EFTA00008529
-            config.last_file_id = 9015;      // Up to DS7 start
+            config.last_file_id = 9015;      // EFTA00009015 (estimate, last seen 8998)
             break;
         case 7:
             config.first_file_id = 9016;     // EFTA00009016
-            config.last_file_id = 9675;      // Up to DS8 start
+            config.last_file_id = 9675;      // EFTA00009675 (estimate, last seen 9664)
             break;
         case 8:
             config.first_file_id = 9676;     // EFTA00009676
-            config.last_file_id = 39024;     // Up to DS9 start
+            config.last_file_id = 39022;     // EFTA00039022
             break;
         case 9:
             // Large data set - ~9308 pages
             config.first_file_id = 39025;    // EFTA00039025
-            config.last_file_id = 1262781;   // Up to DS10 start
+            config.last_file_id = 1262781;   // EFTA01262781
             break;
         case 10:
             config.first_file_id = 1262782;  // EFTA01262782
-            config.last_file_id = 2205654;   // Up to DS11 start
+            config.last_file_id = 1375339;   // EFTA01375339
             break;
         case 11:
-            // Data Set 11 - confirmed range
-            config.first_file_id = 2205655;  // EFTA02205655
-            config.last_file_id = 2730264;   // Up to DS12 start
+            // Large data set - ~6538 pages
+            config.first_file_id = 2205655;  // EFTA02205655 (gap from DS10)
+            config.last_file_id = 2730262;   // EFTA02730262
             break;
         case 12:
-            // Most recent release
             config.first_file_id = 2730265;  // EFTA02730265
-            config.last_file_id = 3500000;   // Estimated upper bound
+            config.last_file_id = 2731783;   // EFTA02731783
             break;
         default:
             // Unknown data set - use wide range
