@@ -218,6 +218,32 @@ void DownloadManager::add_file_to_queue(const std::string& file_id, const std::s
     db_->add_file(record);
 }
 
+void DownloadManager::add_files_to_queue(const std::vector<std::tuple<std::string, std::string, std::string>>& files) {
+    if (!db_ || files.empty()) return;
+
+    std::vector<FileRecord> records;
+    records.reserve(files.size());
+
+    for (const auto& [file_id, url, local_path] : files) {
+        // Skip if already exists
+        if (db_->file_exists(file_id, current_config_.id)) {
+            continue;
+        }
+
+        FileRecord record;
+        record.data_set = current_config_.id;
+        record.file_id = file_id;
+        record.url = url;
+        record.local_path = local_path;
+        record.status = DownloadStatus::PENDING;
+        records.push_back(std::move(record));
+    }
+
+    if (!records.empty()) {
+        db_->add_files_batch(records);
+    }
+}
+
 void DownloadManager::scraper_worker() {
     log("Scraper worker started");
 

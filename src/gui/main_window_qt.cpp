@@ -6,6 +6,8 @@
 #include <QStatusBar>
 #include <QRegularExpression>
 #include <QSet>
+#include <QTextCursor>
+#include <QtConcurrent>
 #include <sstream>
 #include <iomanip>
 
@@ -448,6 +450,15 @@ void MainWindow::pauseDownload() {
 
 void MainWindow::appendLog(const QString& message) {
     QString timestamp = QDateTime::currentDateTime().toString("[HH:mm:ss] ");
+
+    // Limit log size to prevent memory bloat
+    if (logView_->document()->blockCount() > 1000) {
+        QTextCursor cursor = logView_->textCursor();
+        cursor.movePosition(QTextCursor::Start);
+        cursor.movePosition(QTextCursor::Down, QTextCursor::KeepAnchor, 100);
+        cursor.removeSelectedText();
+    }
+
     logView_->append(timestamp + message);
 
     // Scroll to bottom
@@ -570,68 +581,73 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
     Q_UNUSED(url);
     if (!browserScrapingActive_) return;
 
-    // Check if this is a valid page with PDFs
-    int pdfCount = 0;
-    QRegularExpression re(R"(EFTA(\d{8}))", QRegularExpression::CaseInsensitiveOption);
-    QRegularExpressionMatchIterator it = re.globalMatch(html);
-
-    QSet<QString> uniqueIds;
+    // Process HTML in a background thread to avoid blocking UI
     auto config = get_data_set_config(selectedDataSet_);
+    int dataSet = selectedDataSet_;
+    QString downloadPath = downloadPathEdit_->text();
 
-    while (it.hasNext()) {
-        QRegularExpressionMatch match = it.next();
-        QString fileId = "EFTA" + match.captured(1);
-        if (!uniqueIds.contains(fileId)) {
-            uniqueIds.insert(fileId);
-            pdfCount++;
+    QtConcurrent::run([this, html, config, dataSet, downloadPath]() {
+        // Parse HTML for PDF links (runs in background)
+        int pdfCount = 0;
+        QRegularExpression re(R"(EFTA(\d{8}))", QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatchIterator it = re.globalMatch(html);
 
-            // Add to database for download
-            if (downloadManager_) {
+        QSet<QString> uniqueIds;
+        std::vector<std::tuple<std::string, std::string, std::string>> filesToAdd;
+
+        while (it.hasNext()) {
+            QRegularExpressionMatch match = it.next();
+            QString fileId = "EFTA" + match.captured(1);
+            if (!uniqueIds.contains(fileId)) {
+                uniqueIds.insert(fileId);
+                pdfCount++;
+
                 std::string stdFileId = fileId.toStdString();
                 std::string fileUrl = config.file_url_base + stdFileId + ".pdf";
-
-                // Generate local path
-                std::string subdir = stdFileId.substr(4, 3);  // First 3 digits of number
-                std::string localPath = downloadPathEdit_->text().toStdString() +
-                    "/DataSet" + std::to_string(selectedDataSet_) + "/" +
+                std::string subdir = stdFileId.substr(4, 3);
+                std::string localPath = downloadPath.toStdString() +
+                    "/DataSet" + std::to_string(dataSet) + "/" +
                     subdir + "/" + stdFileId + ".pdf";
 
-                downloadManager_->add_file_to_queue(stdFileId, fileUrl, localPath);
+                filesToAdd.emplace_back(stdFileId, fileUrl, localPath);
             }
         }
-    }
 
-    pdfFoundCount_ += pdfCount;
-    appendLog(QString("Page %1: found %2 PDFs (total: %3)")
-        .arg(currentScrapePage_).arg(pdfCount).arg(pdfFoundCount_));
-
-    scraperProgress_->setValue(currentScrapePage_ % 100);
-    scraperLabel_->setText(QString("Page %1 scraped - %2 PDFs found total")
-        .arg(currentScrapePage_).arg(pdfFoundCount_));
-
-    // Check if we should continue
-    if (pdfCount == 0 && currentScrapePage_ > 0) {
-        // No PDFs on this page - might be the end
-        appendLog("No PDFs found on page - checking if this is the last page...");
-
-        // Check if page contains "no results" or is empty
-        if (html.contains("No files found") || html.contains("Page not found") ||
-            html.length() < 5000) {
-            appendLog(QString("Scraping complete! Found %1 PDFs across %2 pages")
-                .arg(pdfFoundCount_).arg(currentScrapePage_));
-            browserScrapingActive_ = false;
-            return;
+        // Add files to download queue in batch (still in background)
+        if (downloadManager_ && !filesToAdd.empty()) {
+            downloadManager_->add_files_to_queue(filesToAdd);
         }
-    }
 
-    // Continue to next page (with delay to avoid hammering)
-    currentScrapePage_++;
-    if (currentScrapePage_ < maxScrapePage_) {
-        scrapeTimer_->start(2000);  // 2 second delay between pages
-    } else {
-        appendLog("Reached max page limit");
-        browserScrapingActive_ = false;
-    }
+        // Update UI on main thread
+        QMetaObject::invokeMethod(this, [this, pdfCount]() {
+            if (!browserScrapingActive_) return;
+
+            pdfFoundCount_ += pdfCount;
+            appendLog(QString("Page %1: found %2 PDFs (total: %3)")
+                .arg(currentScrapePage_).arg(pdfCount).arg(pdfFoundCount_));
+
+            scraperProgress_->setValue(currentScrapePage_ % 100);
+            scraperLabel_->setText(QString("Page %1 scraped - %2 PDFs found total")
+                .arg(currentScrapePage_).arg(pdfFoundCount_));
+
+            // Check if we should continue
+            if (pdfCount == 0 && currentScrapePage_ > 0) {
+                appendLog(QString("Scraping complete! Found %1 PDFs across %2 pages")
+                    .arg(pdfFoundCount_).arg(currentScrapePage_));
+                browserScrapingActive_ = false;
+                return;
+            }
+
+            // Continue to next page
+            currentScrapePage_++;
+            if (currentScrapePage_ < maxScrapePage_) {
+                scrapeTimer_->start(1500);  // 1.5 second delay
+            } else {
+                appendLog("Reached max page limit");
+                browserScrapingActive_ = false;
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 void MainWindow::processBrowserHtml(const QString& html) {

@@ -73,6 +73,7 @@ public:
 
     // Add file to download queue (for browser-based scraping)
     void add_file_to_queue(const std::string& file_id, const std::string& url, const std::string& local_path);
+    void add_files_to_queue(const std::vector<std::tuple<std::string, std::string, std::string>>& files);
 
 private:
     // Worker methods

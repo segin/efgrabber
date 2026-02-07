@@ -17,11 +17,11 @@ find_package(SQLite3 REQUIRED)
 find_package(Threads REQUIRED)
 
 # Try Qt5
-find_package(Qt5 COMPONENTS Widgets QUIET)
+find_package(Qt5 COMPONENTS Widgets Concurrent QUIET)
 find_package(Qt5 COMPONENTS WebEngineWidgets QUIET)
 if(Qt5_FOUND)
     set(QT_FOUND TRUE)
-    set(QT_LIBRARIES Qt5::Widgets)
+    set(QT_LIBRARIES Qt5::Widgets Qt5::Concurrent)
     message(STATUS "Qt5 found - GUI will be built")
     if(Qt5WebEngineWidgets_FOUND)
         set(QT_WEBENGINE_FOUND TRUE)
