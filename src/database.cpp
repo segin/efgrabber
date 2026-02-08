@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cstring>
 #include <optional>
+#include <iostream>
 
 namespace efgrabber {
 
@@ -638,6 +639,7 @@ DownloadStats Database::get_stats(int data_set) {
             else if (strcmp(status, "COMPLETED") == 0) stats.files_completed = count;
             else if (strcmp(status, "FAILED") == 0) stats.files_failed = count;
             else if (strcmp(status, "NOT_FOUND") == 0) stats.files_not_found = count;
+            else if (strcmp(status, "SKIPPED") == 0) stats.files_skipped = count;
         }
         sqlite3_finalize(stmt);
     }
@@ -733,6 +735,27 @@ int Database::reset_failed_files(int data_set) {
     return sqlite3_changes(db_);
 }
 
+int Database::reset_all_files(int data_set) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE files SET status = 'PENDING', retry_count = 0, error_message = NULL WHERE data_set = ?";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, data_set);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        return -1;
+    }
+    std::cerr << "[DEBUG] reset_all_files: Reset " << sqlite3_changes(db_) << " files to PENDING for data_set=" << data_set << std::endl;
+    return sqlite3_changes(db_);
+}
+
 bool Database::has_existing_work(int data_set) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -752,6 +775,8 @@ bool Database::has_existing_work(int data_set) {
 
 int Database::clear_data_set(int data_set) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    std::cerr << "[DEBUG] clear_data_set: Clearing data_set=" << data_set << std::endl;
 
     // Delete files
     sqlite3_stmt* stmt = nullptr;

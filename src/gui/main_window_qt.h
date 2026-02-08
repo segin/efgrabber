@@ -61,6 +61,7 @@ public slots:
     void onStartClicked();
     void onResumeClicked();
     void onRetryFailedClicked();
+    void onRedownloadAllClicked();
     void onClearDataSetClicked();
     void onStopClicked();
     void onPauseClicked();
@@ -192,6 +193,7 @@ private:
     QPushButton* startButton_;
     QPushButton* resumeButton_;
     QPushButton* retryFailedButton_;
+    QPushButton* redownloadAllButton_;
     QPushButton* clearDataSetButton_;
     QPushButton* pauseButton_;
     QPushButton* stopButton_;
@@ -219,6 +221,7 @@ private:
     QTimer* scrapeTimer_;
     QSet<QString> seenFileIds_;
     bool detectingMaxPage_;  // True while detecting max page number
+    bool verifyingFirstPage_;  // True when verifying anti-bot with page 0
 
     // Cached label values for change detection
     QString lastOverallLabel_;

@@ -212,6 +212,9 @@ DownloadResult Downloader::download(const std::string& url, int timeout_seconds)
     setup_common_options(curl, url);
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);  // 5 second connect timeout
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1000L);  // Abort if below 1KB/s
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 10L);     // for more than 10 seconds
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &result.data);
 
@@ -267,7 +270,9 @@ DownloadResult Downloader::download_to_file(const std::string& url, const std::s
     setup_common_options(curl, url);
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);  // 30 second connect timeout
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);  // 5 second connect timeout
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1000L);  // Abort if below 1KB/s
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 10L);     // for more than 10 seconds
 
     FileWriteData write_data{&file, this, progress_cb, 0, 0};
     HeaderData header_data;
@@ -339,7 +344,8 @@ bool Downloader::url_exists(const std::string& url) {
     setup_common_options(curl, url);
 
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);  // HEAD request
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
 
     CURLcode res = curl_easy_perform(curl);
 

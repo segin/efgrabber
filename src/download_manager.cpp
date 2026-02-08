@@ -285,14 +285,16 @@ void DownloadManager::add_files_to_queue(const std::vector<std::tuple<std::strin
         return;
     }
 
-    std::cerr << "[DEBUG] add_files_to_queue: Adding " << files.size() << " files to queue" << std::endl;
+    std::cerr << "[DEBUG] add_files_to_queue: Adding " << files.size() << " files to queue for data_set=" << current_config_.id << std::endl;
 
     std::vector<FileRecord> records;
     records.reserve(files.size());
+    int skipped_duplicates = 0;
 
     for (const auto& [file_id, url, local_path] : files) {
         // Skip if already exists
         if (db_->file_exists(file_id, current_config_.id)) {
+            skipped_duplicates++;
             continue;
         }
 
@@ -305,7 +307,7 @@ void DownloadManager::add_files_to_queue(const std::vector<std::tuple<std::strin
         records.push_back(std::move(record));
     }
 
-    std::cerr << "[DEBUG] add_files_to_queue: " << records.size() << " new records (after dedup)" << std::endl;
+    std::cerr << "[DEBUG] add_files_to_queue: " << records.size() << " new records, " << skipped_duplicates << " skipped (already in db)" << std::endl;
 
     if (!records.empty()) {
         db_->add_files_batch(records);
@@ -321,6 +323,11 @@ int DownloadManager::reset_interrupted_downloads(int data_set) {
 int DownloadManager::retry_failed_downloads(int data_set) {
     if (!db_) return -1;
     return db_->reset_failed_files(data_set);
+}
+
+int DownloadManager::reset_all_to_pending(int data_set) {
+    if (!db_) return -1;
+    return db_->reset_all_files(data_set);
 }
 
 bool DownloadManager::has_pending_work(int data_set) {
@@ -591,6 +598,10 @@ void DownloadManager::download_worker() {
 
             // Double-check: query database one more time before exiting
             auto db_stats = db_->get_stats(current_config_.id);
+            std::cerr << "[DEBUG] download_worker exit check: pending=" << db_stats.files_pending
+                      << " in_progress=" << db_stats.files_in_progress
+                      << " completed=" << db_stats.files_completed
+                      << " failed=" << db_stats.files_failed << std::endl;
             if (db_stats.files_pending > 0 || db_stats.files_in_progress > 0) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;

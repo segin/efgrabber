@@ -61,6 +61,7 @@ public:
     // Resume/retry operations
     int reset_in_progress_files(int data_set);  // Reset IN_PROGRESS to PENDING (for crash recovery)
     int reset_failed_files(int data_set);       // Reset FAILED to PENDING (for retry)
+    int reset_all_files(int data_set);          // Reset ALL statuses to PENDING (for redownload)
     bool has_existing_work(int data_set);       // Check if there's pending/failed work
     int clear_data_set(int data_set);           // Delete all records for a data set
 

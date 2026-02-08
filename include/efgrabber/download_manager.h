@@ -86,6 +86,7 @@ public:
     // Resume/retry operations
     int reset_interrupted_downloads(int data_set);  // Reset IN_PROGRESS to PENDING
     int retry_failed_downloads(int data_set);       // Reset FAILED to PENDING
+    int reset_all_to_pending(int data_set);          // Reset ALL statuses to PENDING for redownload
     bool has_pending_work(int data_set);            // Check if there's work to resume
     int clear_data_set(int data_set);               // Delete all records for a data set
 

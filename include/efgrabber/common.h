@@ -166,6 +166,7 @@ struct DownloadStats {
     int64_t files_completed;
     int64_t files_failed;
     int64_t files_not_found;
+    int64_t files_skipped;
 
     // Brute force mode stats
     uint64_t brute_force_current;

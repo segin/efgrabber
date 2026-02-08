@@ -418,6 +418,11 @@ void MainWindow::setupUi() {
     connect(retryFailedButton_, &QPushButton::clicked, this, &MainWindow::onRetryFailedClicked);
     controlsLayout_->addWidget(retryFailedButton_);
 
+    redownloadAllButton_ = new QPushButton("Redownload All");
+    redownloadAllButton_->setToolTip("Reset all files to pending and redownload (keeps scraped URLs)");
+    connect(redownloadAllButton_, &QPushButton::clicked, this, &MainWindow::onRedownloadAllClicked);
+    controlsLayout_->addWidget(redownloadAllButton_);
+
     clearDataSetButton_ = new QPushButton("Clear");
     clearDataSetButton_->setToolTip("Clear all progress for this data set and start fresh");
     connect(clearDataSetButton_, &QPushButton::clicked, this, &MainWindow::onClearDataSetClicked);
@@ -535,6 +540,7 @@ void MainWindow::onResumeClicked() {
     startButton_->setEnabled(false);
     resumeButton_->setEnabled(false);
     retryFailedButton_->setEnabled(false);
+    redownloadAllButton_->setEnabled(false);
     clearDataSetButton_->setEnabled(false);
     pauseButton_->setEnabled(true);
     stopButton_->setEnabled(true);
@@ -603,6 +609,68 @@ void MainWindow::onRetryFailedClicked() {
     startButton_->setEnabled(false);
     resumeButton_->setEnabled(false);
     retryFailedButton_->setEnabled(false);
+    redownloadAllButton_->setEnabled(false);
+    clearDataSetButton_->setEnabled(false);
+    pauseButton_->setEnabled(true);
+    stopButton_->setEnabled(true);
+    dataSetCombo_->setEnabled(false);
+    modeCombo_->setEnabled(false);
+
+    statsTimer_->start(2000);
+
+    downloadManager_->start_download_only(config);
+}
+
+void MainWindow::onRedownloadAllClicked() {
+    if (isRunning_.load()) return;
+
+    QString downloadDir = downloadPathEdit_->text();
+    if (downloadDir.isEmpty()) {
+        downloadDir = "downloads";
+    }
+
+    QString configDir = QDir::homePath() + "/.config/efgrabber";
+    QDir().mkpath(configDir);
+    QString dbPath = configDir + "/efgrabber.db";
+
+    downloadManager_ = std::make_unique<DownloadManager>(dbPath.toStdString(), downloadDir.toStdString());
+
+    if (!downloadManager_->initialize()) {
+        logQuiet(LogChannel::SYSTEM, "Failed to initialize download manager");
+        return;
+    }
+
+    downloadManager_->set_max_concurrent_downloads(threadCountSpin_->value());
+    downloadManager_->set_overwrite_existing(overwriteExistingCheck_->isChecked());
+
+    // Set cookies if available
+    if (browserWidget_->hasCookiesFor("justice.gov")) {
+        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+        if (!browserCookies.isEmpty()) {
+            downloadManager_->set_cookie_string(browserCookies.toStdString());
+            logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
+        }
+    }
+
+    auto config = get_data_set_config(selectedDataSet_);
+
+    // Reset ALL files to pending (keeps the URLs, just re-downloads them)
+    int resetCount = downloadManager_->reset_all_to_pending(selectedDataSet_);
+
+    if (resetCount == 0) {
+        logQuiet(LogChannel::SYSTEM, "No files found for this data set - run Start first to scrape URLs");
+        downloadManager_.reset();
+        return;
+    }
+
+    logNormal(LogChannel::SYSTEM, QString("Redownloading %1 files for Data Set %2")
+        .arg(resetCount).arg(selectedDataSet_));
+
+    isRunning_.store(true);
+    startButton_->setEnabled(false);
+    resumeButton_->setEnabled(false);
+    retryFailedButton_->setEnabled(false);
+    redownloadAllButton_->setEnabled(false);
     clearDataSetButton_->setEnabled(false);
     pauseButton_->setEnabled(true);
     stopButton_->setEnabled(true);
@@ -814,6 +882,7 @@ void MainWindow::startBrowserScraping(int dataSet) {
     seenFileIds_.clear();
     detectedLastPage_ = -1;
     detectingMaxPage_ = true;
+    verifyingFirstPage_ = false;
 
     logNormal(LogChannel::SCRAPER, QString("Starting browser-based scraping for Data Set %1").arg(dataSet));
 
@@ -899,6 +968,7 @@ void MainWindow::stopDownload() {
     startButton_->setEnabled(true);
     resumeButton_->setEnabled(true);
     retryFailedButton_->setEnabled(true);
+    redownloadAllButton_->setEnabled(true);
     clearDataSetButton_->setEnabled(true);
     stopButton_->setEnabled(false);
     pauseButton_->setEnabled(false);
@@ -1015,15 +1085,17 @@ void MainWindow::updateLabel(QLabel* label, const QString& text) {
 }
 
 void MainWindow::updateStats(const DownloadStats& stats) {
-    // Only update if values changed
+    // Calculate total files and done files
+    // "Done" includes completed, 404s, and skipped - anything that doesn't need more work
     int64_t total = stats.files_completed + stats.files_failed + stats.files_pending +
-                   stats.files_in_progress + stats.files_not_found;
-    int progress = total > 0 ? static_cast<int>(100 * stats.files_completed / total) : 0;
+                   stats.files_in_progress + stats.files_not_found + stats.files_skipped;
+    int64_t done = stats.files_completed + stats.files_not_found + stats.files_skipped;
+    int progress = total > 0 ? static_cast<int>(100 * done / total) : 0;
 
     updateProgressBar(overallProgress_, progress);
 
     QString overallText = QString("%1 / %2 files (%3%)")
-        .arg(stats.files_completed).arg(total).arg(progress);
+        .arg(done).arg(total).arg(progress);
     updateLabel(overallLabel_, overallText);
 
     // Stats labels - only update if changed
@@ -1065,26 +1137,45 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
     Q_UNUSED(url);
     if (!browserScrapingActive_.load()) return;
 
+    // Helper to check for anti-bot signatures
+    auto checkBlocked = [](const QString& html) -> bool {
+        return html.contains("Access Denied") ||
+               html.contains("captcha") ||
+               html.contains("Please verify") ||
+               html.contains("bot detection") ||
+               html.contains("I am not a robot") ||
+               html.contains("reauth()") ||
+               html.contains("abuse-deterrent.js") ||
+               html.length() < 1000;
+    };
+
+    // Handle verification of first page (after page 99999 was blocked)
+    if (verifyingFirstPage_) {
+        verifyingFirstPage_ = false;
+
+        bool isBlocked = checkBlocked(html);
+        if (isBlocked) {
+            // Page 0 is also blocked - this is a real anti-bot block
+            logQuiet(LogChannel::SYSTEM, "CRITICAL: Anti-bot challenge detected. Please solve the challenge in the Browser tab.");
+            // Still try to continue with sequential scraping after user solves it
+        } else {
+            logNormal(LogChannel::SCRAPER, "Page 0 loaded successfully - anti-bot only affected high page numbers");
+        }
+
+        // Continue with sequential scraping from page 0
+        detectedLastPage_ = -1;
+        updateLabel(scraperLabel_, "Scraping pages (unknown total)...");
+        currentScrapePage_.store(0);
+        // Process this page's content (it's page 0)
+        // Fall through to the sequential scraping logic below
+    }
+
     // Handle max page detection (first request to page 99999)
     if (detectingMaxPage_) {
         detectingMaxPage_ = false;
 
         int maxFound = -1;
-
-        // Check if we got an anti-bot block (typically returns a challenge page)
-        bool isBlocked = html.contains("Access Denied") ||
-                         html.contains("captcha") ||
-                         html.contains("Please verify") ||
-                         html.contains("bot detection") ||
-                         html.contains("I am not a robot") ||
-                         html.contains("reauth()") ||
-                         html.contains("abuse-deterrent.js") ||
-                         html.length() < 1000;  // Suspiciously short response
-
-        if (isBlocked) {
-            logQuiet(LogChannel::SYSTEM, "CRITICAL: Anti-bot challenge detected in browser. Please solve the 'I am not a robot' challenge in the Browser tab.");
-            tabWidget_->setCurrentWidget(browserWidget_);
-        }
+        bool isBlocked = checkBlocked(html);
 
         if (!isBlocked) {
             // When requesting page 99999, the server redirects to the actual last page.
@@ -1116,17 +1207,21 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
             logNormal(LogChannel::SCRAPER, QString("Starting parallel scraping with %1 tab(s)").arg(tabCount));
             scraperPool_->startScraping(QString::fromStdString(config.base_url), maxFound);
         } else {
-            // Couldn't detect max page (anti-bot or other issue)
-            // Fall back to sequential scraping, stop when no "Next" link
-            detectedLastPage_ = -1;
+            // Couldn't detect max page - could be anti-bot or other issue
             if (isBlocked) {
-                logNormal(LogChannel::SCRAPER, "Anti-bot detected on page probe - starting from page 0, will stop at last page");
+                // Anti-bot triggered on page 99999 - verify with page 0 before alerting user
+                logNormal(LogChannel::SCRAPER, "High page probe blocked - verifying with page 0...");
+                verifyingFirstPage_ = true;
+                auto config = get_data_set_config(selectedDataSet_);
+                browserWidget_->fetchPageForScraping(QString::fromStdString(config.base_url));
             } else {
+                // No pagination found but not blocked - just start sequential
                 logNormal(LogChannel::SCRAPER, "Could not detect page count - starting from page 0, will stop at last page");
+                detectedLastPage_ = -1;
+                updateLabel(scraperLabel_, "Scraping pages (unknown total)...");
+                currentScrapePage_.store(0);
+                scrapeNextPage();
             }
-            updateLabel(scraperLabel_, "Scraping pages (unknown total)...");
-            currentScrapePage_.store(0);
-            scrapeNextPage();
         }
         return;
     }
