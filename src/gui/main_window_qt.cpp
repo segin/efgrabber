@@ -979,6 +979,7 @@ void MainWindow::stopDownload() {
 
     browserScrapingActive_.store(false);
     if (scrapeTimer_) scrapeTimer_->stop();
+    if (scraperPool_) scraperPool_->stop();
     statsTimer_->stop();
 
     if (downloadManager_) {
@@ -1006,15 +1007,17 @@ void MainWindow::stopDownload() {
 }
 
 void MainWindow::pauseDownload() {
-    if (!isRunning_.load() || !downloadManager_) return;
+    if (!isRunning_.load()) return;
 
     if (isPaused_.load()) {
-        downloadManager_->resume();
+        if (downloadManager_) downloadManager_->resume();
+        if (scraperPool_) scraperPool_->resume();
         isPaused_.store(false);
         pauseButton_->setText("Pause");
         logNormal(LogChannel::SYSTEM, "Download resumed");
     } else {
-        downloadManager_->pause();
+        if (downloadManager_) downloadManager_->pause();
+        if (scraperPool_) scraperPool_->pause();
         isPaused_.store(true);
         pauseButton_->setText("Resume");
         logNormal(LogChannel::SYSTEM, "Download paused");

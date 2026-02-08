@@ -46,6 +46,12 @@ public:
     // Stop all scraping and clear state
     void stop();
 
+    // Pause scraping (finishes current downloads but doesn't start new ones)
+    void pause();
+
+    // Resume scraping
+    void resume();
+
     // Check if scraping is active
     bool isActive() const { return active_; }
 
@@ -93,6 +99,7 @@ private:
 
     // Scraping state
     bool active_ = false;
+    bool paused_ = false;
     QString baseUrl_;
     int maxPage_ = -1;
     mutable QMutex mutex_;

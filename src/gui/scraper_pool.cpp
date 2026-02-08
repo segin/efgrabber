@@ -170,6 +170,7 @@ void ScraperPool::startScrapingPages(const QString& baseUrl, const QList<int>& p
 
 void ScraperPool::stop() {
     active_ = false;
+    paused_ = false;
 
 #ifdef HAVE_WEBENGINE
     for (auto& sv : views_) {
@@ -185,6 +186,20 @@ void ScraperPool::stop() {
     inProgressPages_.clear();
     failedPages_.clear();
     pendingPages_.clear();
+}
+
+void ScraperPool::pause() {
+    QMutexLocker lock(&mutex_);
+    paused_ = true;
+}
+
+void ScraperPool::resume() {
+    {
+        QMutexLocker lock(&mutex_);
+        if (!active_) return; // Can't resume if not active
+        paused_ = false;
+    }
+    dispatchNext();
 }
 
 int ScraperPool::pagesScraped() const {
@@ -226,6 +241,7 @@ void ScraperPool::dispatchNext() {
     if (!active_) return;
 
     QMutexLocker lock(&mutex_);
+    if (paused_) return;
 
     for (auto& sv : views_) {
         if (!sv.busy) {
@@ -321,7 +337,9 @@ void ScraperPool::onLoadFinished(bool ok) {
         }
 
         // Dispatch next page
-        QTimer::singleShot(0, this, &ScraperPool::dispatchNext);
+        if (!paused_) {
+            QTimer::singleShot(0, this, &ScraperPool::dispatchNext);
+        }
     });
 #else
     Q_UNUSED(ok);
