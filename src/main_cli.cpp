@@ -184,15 +184,6 @@ int main(int argc, char** argv) {
     // Set up callbacks for console output
     DownloadCallbacks callbacks;
 
-    callbacks.on_log_message = [](const std::string& message) {
-        auto now = std::chrono::system_clock::now();
-        auto time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm tm_buf;
-        localtime_r(&time_t, &tm_buf);
-
-        std::cout << "[" << std::put_time(&tm_buf, "%H:%M:%S") << "] " << message << "\n";
-    };
-
     // Thread-safe stats storage
     std::mutex stats_mutex;
     DownloadStats last_stats{};

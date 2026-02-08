@@ -42,6 +42,10 @@ public:
     // Check if we have cookies for a domain
     bool hasCookiesFor(const QString& domain) const;
 
+#ifdef HAVE_WEBENGINE
+    QWebEngineProfile* profile() const;
+#endif
+
 signals:
     void cookiesChanged();
     void urlChanged(const QString& url);

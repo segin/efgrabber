@@ -3,6 +3,7 @@
 #include <cstring>
 #include <fstream>
 #include <stdexcept>
+#include <chrono>
 
 namespace efgrabber {
 
@@ -266,26 +267,25 @@ DownloadResult Downloader::download_to_file(const std::string& url, const std::s
     setup_common_options(curl, url);
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);  // 30 second connect timeout
 
     FileWriteData write_data{&file, this, progress_cb, 0, 0};
-
-    // First do a HEAD request to get content length
-    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
     HeaderData header_data;
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &header_data);
-    curl_easy_perform(curl);
-    write_data.total = header_data.content_length;
 
-    // Now do the actual download
-    setup_common_options(curl, url);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
+    // Skip HEAD request - just get content-length from response headers during download
+    // HEAD requests can be slow/blocked by some servers
+
+    // Do the actual download
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, file_write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &write_data);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, &header_data);
 
+    auto transfer_start = std::chrono::steady_clock::now();
     CURLcode res = curl_easy_perform(curl);
+    auto transfer_end = std::chrono::steady_clock::now();
+    result.download_time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        transfer_end - transfer_start).count();
 
     file.close();
 
@@ -293,6 +293,7 @@ DownloadResult Downloader::download_to_file(const std::string& url, const std::s
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     result.http_code = static_cast<int>(http_code);
     result.content_length = write_data.downloaded;
+    result.expected_length = header_data.content_length;  // From response headers
     result.content_type = header_data.content_type;
 
     if (res != CURLE_OK) {
@@ -304,7 +305,16 @@ DownloadResult Downloader::download_to_file(const std::string& url, const std::s
         std::remove(filepath.c_str());
     } else {
         result.success = (http_code >= 200 && http_code < 300);
-        if (!result.success) {
+
+        // Verify size if server provided Content-Length
+        if (result.success && result.expected_length > 0 &&
+            result.content_length != result.expected_length) {
+            result.success = false;
+            result.error_message = "Size mismatch: expected " +
+                std::to_string(result.expected_length) + " bytes, got " +
+                std::to_string(result.content_length);
+            std::remove(filepath.c_str());
+        } else if (!result.success) {
             result.error_message = "HTTP error: " + std::to_string(http_code);
             std::remove(filepath.c_str());
         }

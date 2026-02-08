@@ -8,15 +8,113 @@
 #include <QSet>
 #include <QTextCursor>
 #include <QtConcurrent>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QDir>
+#include <iostream>
 #include <sstream>
 #include <iomanip>
 
 namespace efgrabber {
 
+// Settings file location
+static QString getSettingsPath() {
+    QString configDir = QDir::homePath() + "/.config/efgrabber";
+    QDir().mkpath(configDir);
+    return configDir + "/settings.conf";
+}
+
+void MainWindow::loadSettings() {
+    QSettings settings(getSettingsPath(), QSettings::IniFormat);
+
+    // Restore window geometry
+    if (settings.contains("window/geometry")) {
+        restoreGeometry(settings.value("window/geometry").toByteArray());
+    }
+
+    // Restore data set selection
+    int dataSet = settings.value("download/dataSet", 11).toInt();
+    int dataSetIndex = dataSet - 1;  // Data sets are 1-12, combo indices are 0-11
+    if (dataSetIndex >= 0 && dataSetIndex < dataSetCombo_->count()) {
+        dataSetCombo_->setCurrentIndex(dataSetIndex);
+        selectedDataSet_ = dataSet;
+    }
+
+    // Restore mode selection
+    int modeIndex = settings.value("download/modeIndex", 0).toInt();
+    if (modeIndex >= 0 && modeIndex < modeCombo_->count()) {
+        modeCombo_->setCurrentIndex(modeIndex);
+    }
+
+    // Restore download path
+    QString downloadPath = settings.value("download/path", "downloads").toString();
+    downloadPathEdit_->setText(downloadPath);
+
+    // Restore cookie file path
+    QString cookiePath = settings.value("download/cookieFile", "").toString();
+    cookieFileEdit_->setText(cookiePath);
+
+    // Restore thread count
+    int threadCount = settings.value("download/threadCount", 50).toInt();
+    threadCountSpin_->setValue(threadCount);
+
+    // Restore overwrite existing setting
+    bool overwriteExisting = settings.value("download/overwriteExisting", false).toBool();
+    overwriteExistingCheck_->setChecked(overwriteExisting);
+
+    // Restore log verbosity
+    int verbosity = settings.value("log/verbosity", static_cast<int>(LogLevel::NORMAL)).toInt();
+    logVerbosityCombo_->setCurrentIndex(verbosity);
+    logLevel_ = static_cast<LogLevel>(verbosity);
+
+    // Restore log channel filters
+    logSystemCheck_->setChecked(settings.value("log/showSystem", true).toBool());
+    logScraperCheck_->setChecked(settings.value("log/showScraper", true).toBool());
+    logDownloadCheck_->setChecked(settings.value("log/showDownload", true).toBool());
+    logDebugCheck_->setChecked(settings.value("log/showDebug", false).toBool());
+}
+
+void MainWindow::saveSettings() {
+    QSettings settings(getSettingsPath(), QSettings::IniFormat);
+
+    // Save window geometry
+    settings.setValue("window/geometry", saveGeometry());
+
+    // Save data set selection
+    settings.setValue("download/dataSet", selectedDataSet_);
+
+    // Save mode selection
+    settings.setValue("download/modeIndex", modeCombo_->currentIndex());
+
+    // Save download path
+    settings.setValue("download/path", downloadPathEdit_->text());
+
+    // Save cookie file path
+    settings.setValue("download/cookieFile", cookieFileEdit_->text());
+
+    // Save thread count
+    settings.setValue("download/threadCount", threadCountSpin_->value());
+
+    // Save overwrite existing setting
+    settings.setValue("download/overwriteExisting", overwriteExistingCheck_->isChecked());
+
+    // Save log verbosity
+    settings.setValue("log/verbosity", static_cast<int>(logLevel_));
+
+    // Save log channel filters
+    settings.setValue("log/showSystem", logSystemCheck_->isChecked());
+    settings.setValue("log/showScraper", logScraperCheck_->isChecked());
+    settings.setValue("log/showDownload", logDownloadCheck_->isChecked());
+    settings.setValue("log/showDebug", logDebugCheck_->isChecked());
+
+    settings.sync();
+}
+
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
     , selectedDataSet_(11)
     , selectedMode_(OperationMode::SCRAPER)
+    , logLevel_(LogLevel::NORMAL)
     , isRunning_(false)
     , isPaused_(false)
     , browserScrapingActive_(false)
@@ -25,10 +123,16 @@ MainWindow::MainWindow(QWidget* parent)
     , pdfFoundCount_(0)
     , scrapeTimer_(nullptr)
 {
+    // Register DownloadStats for Qt signal/slot system
+    qRegisterMetaType<DownloadStats>("DownloadStats");
+
     setWindowTitle("Epstein Files Grabber");
     resize(1000, 700);
 
     setupUi();
+
+    // Load saved settings
+    loadSettings();
 
     // Connect signals with queued connections for thread safety
     connect(this, &MainWindow::logMessageReceived, this, &MainWindow::appendLog, Qt::QueuedConnection);
@@ -51,6 +155,12 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow() {
     stopDownload();
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    saveSettings();
+    stopDownload();
+    event->accept();
 }
 
 void MainWindow::setupUi() {
@@ -135,6 +245,38 @@ void MainWindow::setupUi() {
     rangeLayout->addStretch();
     downloaderLayout->addLayout(rangeLayout);
 
+    // Download thread count control
+    QHBoxLayout* threadLayout = new QHBoxLayout();
+    threadLayout->addWidget(new QLabel("Download Threads:"));
+    threadCountSpin_ = new QSpinBox();
+    threadCountSpin_->setRange(1, 500);
+    threadCountSpin_->setValue(50);  // Default 50 threads
+    threadCountSpin_->setToolTip("Number of concurrent download threads (adjustable at runtime)");
+    connect(threadCountSpin_, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &MainWindow::onThreadCountChanged);
+    threadLayout->addWidget(threadCountSpin_);
+    activeDownloadsLabel_ = new QLabel("");
+    threadLayout->addWidget(activeDownloadsLabel_);
+
+    threadLayout->addSpacing(20);
+    threadLayout->addWidget(new QLabel("Scraper Tabs:"));
+    scraperTabCountSpin_ = new QSpinBox();
+    scraperTabCountSpin_->setRange(1, 10);
+    scraperTabCountSpin_->setValue(1);  // Default 1 tab
+    scraperTabCountSpin_->setToolTip("Number of concurrent browser tabs for scraping (1-10)");
+    threadLayout->addWidget(scraperTabCountSpin_);
+
+    threadLayout->addStretch();
+    downloaderLayout->addLayout(threadLayout);
+
+    // Download options row
+    QHBoxLayout* optionsLayout = new QHBoxLayout();
+    overwriteExistingCheck_ = new QCheckBox("Overwrite existing files");
+    overwriteExistingCheck_->setToolTip("Re-download files that already exist on disk");
+    optionsLayout->addWidget(overwriteExistingCheck_);
+    optionsLayout->addStretch();
+    downloaderLayout->addLayout(optionsLayout);
+
     // Overall progress
     overallGroup_ = new QGroupBox("Overall Progress");
     QVBoxLayout* overallLayout = new QVBoxLayout(overallGroup_);
@@ -169,7 +311,7 @@ void MainWindow::setupUi() {
     statsGrid_->addWidget(new QLabel("Active:"), row, 2);
     activeLabel_ = new QLabel("0");
     statsGrid_->addWidget(activeLabel_, row, 3);
-    statsGrid_->addWidget(new QLabel("Speed:"), row, 4);
+    statsGrid_->addWidget(new QLabel("Wall Speed:"), row, 4);
     speedLabel_ = new QLabel("0 B/s");
     statsGrid_->addWidget(speedLabel_, row, 5);
 
@@ -180,6 +322,9 @@ void MainWindow::setupUi() {
     statsGrid_->addWidget(new QLabel("Downloaded:"), row, 2);
     bytesLabel_ = new QLabel("0 B");
     statsGrid_->addWidget(bytesLabel_, row, 3);
+    statsGrid_->addWidget(new QLabel("Wire Speed:"), row, 4);
+    wireSpeedLabel_ = new QLabel("0 B/s");
+    statsGrid_->addWidget(wireSpeedLabel_, row, 5);
 
     downloaderLayout->addWidget(statsGroup_);
 
@@ -206,6 +351,42 @@ void MainWindow::setupUi() {
     // Log view - using QPlainTextEdit for better performance
     logGroup_ = new QGroupBox("Log");
     QVBoxLayout* logLayout = new QVBoxLayout(logGroup_);
+
+    // Log controls row
+    QHBoxLayout* logControlsLayout = new QHBoxLayout();
+    logControlsLayout->addWidget(new QLabel("Verbosity:"));
+    logVerbosityCombo_ = new QComboBox();
+    logVerbosityCombo_->addItem("Quiet (errors only)", static_cast<int>(LogLevel::QUIET));
+    logVerbosityCombo_->addItem("Normal", static_cast<int>(LogLevel::NORMAL));
+    logVerbosityCombo_->addItem("Verbose (all files)", static_cast<int>(LogLevel::VERBOSE));
+    logVerbosityCombo_->addItem("Debug", static_cast<int>(LogLevel::DEBUG));
+    logVerbosityCombo_->setCurrentIndex(1);  // Normal by default
+    connect(logVerbosityCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int index) {
+        logLevel_ = static_cast<LogLevel>(logVerbosityCombo_->itemData(index).toInt());
+    });
+    logControlsLayout->addWidget(logVerbosityCombo_);
+
+    logControlsLayout->addSpacing(20);
+    logControlsLayout->addWidget(new QLabel("Channels:"));
+    logSystemCheck_ = new QCheckBox("System");
+    logSystemCheck_->setChecked(true);
+    logControlsLayout->addWidget(logSystemCheck_);
+    logScraperCheck_ = new QCheckBox("Scraper");
+    logScraperCheck_->setChecked(true);
+    logControlsLayout->addWidget(logScraperCheck_);
+    logDownloadCheck_ = new QCheckBox("Download");
+    logDownloadCheck_->setChecked(true);
+    logControlsLayout->addWidget(logDownloadCheck_);
+    logDebugCheck_ = new QCheckBox("Debug");
+    logDebugCheck_->setChecked(false);
+    logControlsLayout->addWidget(logDebugCheck_);
+    logControlsLayout->addStretch();
+
+    QPushButton* clearLogButton = new QPushButton("Clear");
+    logControlsLayout->addWidget(clearLogButton);
+
+    logLayout->addLayout(logControlsLayout);
+
     logView_ = new QPlainTextEdit();
     logView_->setReadOnly(true);
     logView_->setFont(QFont("Monospace", 9));
@@ -213,6 +394,10 @@ void MainWindow::setupUi() {
     logView_->setLineWrapMode(QPlainTextEdit::NoWrap);
     logView_->setMinimumHeight(120);
     logLayout->addWidget(logView_);
+
+    // Connect clear button after logView_ is created
+    connect(clearLogButton, &QPushButton::clicked, logView_, &QPlainTextEdit::clear);
+
     downloaderLayout->addWidget(logGroup_);
 
     // Control buttons
@@ -220,9 +405,23 @@ void MainWindow::setupUi() {
     controlsLayout_->addStretch();
 
     startButton_ = new QPushButton("Start");
-    startButton_->setStyleSheet("background-color: #4CAF50; color: white; padding: 8px 24px;");
     connect(startButton_, &QPushButton::clicked, this, &MainWindow::onStartClicked);
     controlsLayout_->addWidget(startButton_);
+
+    resumeButton_ = new QPushButton("Resume");
+    resumeButton_->setToolTip("Resume interrupted downloads from database");
+    connect(resumeButton_, &QPushButton::clicked, this, &MainWindow::onResumeClicked);
+    controlsLayout_->addWidget(resumeButton_);
+
+    retryFailedButton_ = new QPushButton("Retry Failed");
+    retryFailedButton_->setToolTip("Retry all failed downloads");
+    connect(retryFailedButton_, &QPushButton::clicked, this, &MainWindow::onRetryFailedClicked);
+    controlsLayout_->addWidget(retryFailedButton_);
+
+    clearDataSetButton_ = new QPushButton("Clear");
+    clearDataSetButton_->setToolTip("Clear all progress for this data set and start fresh");
+    connect(clearDataSetButton_, &QPushButton::clicked, this, &MainWindow::onClearDataSetClicked);
+    controlsLayout_->addWidget(clearDataSetButton_);
 
     pauseButton_ = new QPushButton("Pause");
     pauseButton_->setEnabled(false);
@@ -230,7 +429,6 @@ void MainWindow::setupUi() {
     controlsLayout_->addWidget(pauseButton_);
 
     stopButton_ = new QPushButton("Stop");
-    stopButton_->setStyleSheet("background-color: #f44336; color: white; padding: 8px 24px;");
     stopButton_->setEnabled(false);
     connect(stopButton_, &QPushButton::clicked, this, &MainWindow::onStopClicked);
     controlsLayout_->addWidget(stopButton_);
@@ -244,6 +442,25 @@ void MainWindow::setupUi() {
     // Browser tab
     browserWidget_ = new BrowserWidget();
     tabWidget_->addTab(browserWidget_, "Browser");
+
+    // Create scraper pool for parallel scraping
+    scraperPool_ = new ScraperPool(this);
+    connect(scraperPool_, &ScraperPool::pageReady,
+            this, &MainWindow::onScraperPageReady);
+    connect(scraperPool_, &ScraperPool::pageFailed,
+            this, [this](int page, const QString& error) {
+                logNormal(LogChannel::SCRAPER, QString("Page %1 failed: %2").arg(page).arg(error));
+            });
+    connect(scraperPool_, &ScraperPool::allPagesComplete,
+            this, &MainWindow::onScrapingComplete);
+    connect(scraperPool_, &ScraperPool::progressUpdate,
+            this, [this](int scraped, int total) {
+                if (total > 0) {
+                    int pct = 100 * scraped / total;
+                    updateProgressBar(scraperProgress_, pct);
+                    updateLabel(scraperLabel_, QString("%1 / %2 pages scraped").arg(scraped).arg(total));
+                }
+            });
 
     // Connect browser signals
     connect(browserWidget_, &BrowserWidget::cookiesChanged, this, [this]() {
@@ -266,6 +483,165 @@ void MainWindow::setupUi() {
 
 void MainWindow::onStartClicked() {
     startDownload(selectedDataSet_, selectedMode_);
+}
+
+void MainWindow::onResumeClicked() {
+    if (isRunning_.load()) return;
+
+    QString downloadDir = downloadPathEdit_->text();
+    if (downloadDir.isEmpty()) {
+        downloadDir = "downloads";
+    }
+
+    // Store database in config directory for persistence
+    QString configDir = QDir::homePath() + "/.config/efgrabber";
+    QDir().mkpath(configDir);
+    QString dbPath = configDir + "/efgrabber.db";
+
+    downloadManager_ = std::make_unique<DownloadManager>(dbPath.toStdString(), downloadDir.toStdString());
+
+    if (!downloadManager_->initialize()) {
+        logQuiet(LogChannel::SYSTEM, "Failed to initialize download manager");
+        return;
+    }
+
+    downloadManager_->set_max_concurrent_downloads(threadCountSpin_->value());
+    downloadManager_->set_overwrite_existing(overwriteExistingCheck_->isChecked());
+
+    // Set cookies if available
+    if (browserWidget_->hasCookiesFor("justice.gov")) {
+        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+        if (!browserCookies.isEmpty()) {
+            downloadManager_->set_cookie_string(browserCookies.toStdString());
+            logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
+        }
+    }
+
+    auto config = get_data_set_config(selectedDataSet_);
+
+    // Reset any interrupted downloads
+    int resetCount = downloadManager_->reset_interrupted_downloads(selectedDataSet_);
+    if (resetCount > 0) {
+        logNormal(LogChannel::SYSTEM, QString("Reset %1 interrupted downloads to pending").arg(resetCount));
+    }
+
+    if (!downloadManager_->has_pending_work(selectedDataSet_)) {
+        logQuiet(LogChannel::SYSTEM, "No pending work to resume for this data set");
+        downloadManager_.reset();
+        return;
+    }
+
+    isRunning_.store(true);
+    startButton_->setEnabled(false);
+    resumeButton_->setEnabled(false);
+    retryFailedButton_->setEnabled(false);
+    clearDataSetButton_->setEnabled(false);
+    pauseButton_->setEnabled(true);
+    stopButton_->setEnabled(true);
+    dataSetCombo_->setEnabled(false);
+    modeCombo_->setEnabled(false);
+
+    statsTimer_->start(2000);
+
+    logQuiet(LogChannel::SYSTEM, QString("Resuming downloads for Data Set %1").arg(selectedDataSet_));
+
+    downloadManager_->start_download_only(config);
+}
+
+void MainWindow::onRetryFailedClicked() {
+    if (isRunning_.load()) return;
+
+    QString downloadDir = downloadPathEdit_->text();
+    if (downloadDir.isEmpty()) {
+        downloadDir = "downloads";
+    }
+
+    QString configDir = QDir::homePath() + "/.config/efgrabber";
+    QDir().mkpath(configDir);
+    QString dbPath = configDir + "/efgrabber.db";
+
+    downloadManager_ = std::make_unique<DownloadManager>(dbPath.toStdString(), downloadDir.toStdString());
+
+    if (!downloadManager_->initialize()) {
+        logQuiet(LogChannel::SYSTEM, "Failed to initialize download manager");
+        return;
+    }
+
+    downloadManager_->set_max_concurrent_downloads(threadCountSpin_->value());
+
+    // Set cookies if available
+    if (browserWidget_->hasCookiesFor("justice.gov")) {
+        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+        if (!browserCookies.isEmpty()) {
+            downloadManager_->set_cookie_string(browserCookies.toStdString());
+            logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
+        }
+    }
+
+    auto config = get_data_set_config(selectedDataSet_);
+
+    // Reset any stuck IN_PROGRESS files first (from crashed sessions)
+    int resetCount = downloadManager_->reset_interrupted_downloads(selectedDataSet_);
+    if (resetCount > 0) {
+        logNormal(LogChannel::SYSTEM, QString("Reset %1 interrupted downloads").arg(resetCount));
+    }
+
+    // Retry failed downloads
+    int retryCount = downloadManager_->retry_failed_downloads(selectedDataSet_);
+    int totalToRetry = resetCount + retryCount;
+
+    if (totalToRetry == 0) {
+        logQuiet(LogChannel::SYSTEM, "No failed or interrupted downloads to retry for this data set");
+        downloadManager_.reset();
+        return;
+    }
+
+    logNormal(LogChannel::SYSTEM, QString("Retrying %1 downloads (%2 failed, %3 interrupted)")
+        .arg(totalToRetry).arg(retryCount).arg(resetCount));
+
+    isRunning_.store(true);
+    startButton_->setEnabled(false);
+    resumeButton_->setEnabled(false);
+    retryFailedButton_->setEnabled(false);
+    clearDataSetButton_->setEnabled(false);
+    pauseButton_->setEnabled(true);
+    stopButton_->setEnabled(true);
+    dataSetCombo_->setEnabled(false);
+    modeCombo_->setEnabled(false);
+
+    statsTimer_->start(2000);
+
+    downloadManager_->start_download_only(config);
+}
+
+void MainWindow::onClearDataSetClicked() {
+    if (isRunning_.load()) {
+        logQuiet(LogChannel::SYSTEM, "Cannot clear while running - stop first");
+        return;
+    }
+
+    // Create temporary download manager to access database
+    QString configDir = QDir::homePath() + "/.config/efgrabber";
+    QString dbPath = configDir + "/efgrabber.db";
+    QString downloadDir = downloadPathEdit_->text();
+    if (downloadDir.isEmpty()) downloadDir = "downloads";
+
+    auto tempManager = std::make_unique<DownloadManager>(dbPath.toStdString(), downloadDir.toStdString());
+    if (!tempManager->initialize()) {
+        logQuiet(LogChannel::SYSTEM, "Failed to access database");
+        return;
+    }
+
+    int deleted = tempManager->clear_data_set(selectedDataSet_);
+    if (deleted >= 0) {
+        logQuiet(LogChannel::SYSTEM, QString("Cleared Data Set %1: removed %2 file records")
+            .arg(selectedDataSet_).arg(deleted));
+        // Also clear the seen file IDs for this session
+        seenFileIds_.clear();
+        pdfFoundCount_.store(0);
+    } else {
+        logQuiet(LogChannel::SYSTEM, "Failed to clear data set");
+    }
 }
 
 void MainWindow::onStopClicked() {
@@ -309,6 +685,20 @@ void MainWindow::onStatsTimer() {
     if (downloadManager_ && isRunning_.load()) {
         DownloadStats stats = downloadManager_->get_stats();
         emit statsReceived(stats);
+
+        // Show actual active downloads
+        int activeCount = stats.files_in_progress;
+        if (activeCount > 0) {
+            activeDownloadsLabel_->setText(QString("(%1 downloading)").arg(activeCount));
+        } else {
+            activeDownloadsLabel_->setText("(idle)");
+        }
+    }
+}
+
+void MainWindow::onThreadCountChanged(int value) {
+    if (downloadManager_) {
+        downloadManager_->set_max_concurrent_downloads(value);
     }
 }
 
@@ -319,13 +709,23 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     if (downloadDir.isEmpty()) {
         downloadDir = "downloads";
     }
-    QString dbPath = "efgrabber.db";
+
+    // Store database in config directory for persistence
+    QString configDir = QDir::homePath() + "/.config/efgrabber";
+    QDir().mkpath(configDir);
+    QString dbPath = configDir + "/efgrabber.db";
 
     downloadManager_ = std::make_unique<DownloadManager>(dbPath.toStdString(), downloadDir.toStdString());
 
     if (!downloadManager_->initialize()) {
-        appendLog("Failed to initialize download manager");
+        logQuiet(LogChannel::SYSTEM, "Failed to initialize download manager");
         return;
+    }
+
+    // Reset any files stuck as IN_PROGRESS from previous crashed sessions
+    int resetCount = downloadManager_->reset_interrupted_downloads(dataSet);
+    if (resetCount > 0) {
+        logNormal(LogChannel::SYSTEM, QString("Reset %1 interrupted downloads").arg(resetCount));
     }
 
     // Use cookies from browser or file
@@ -333,21 +733,18 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
         QString browserCookies = browserWidget_->getCookieString("justice.gov");
         if (!browserCookies.isEmpty()) {
             downloadManager_->set_cookie_string(browserCookies.toStdString());
-            appendLog("Using cookies from browser session");
+            logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
         }
     } else {
         QString cookieFile = cookieFileEdit_->text();
         if (!cookieFile.isEmpty()) {
             downloadManager_->set_cookie_file(cookieFile.toStdString());
-            appendLog("Using cookies from file: " + cookieFile);
+            logNormal(LogChannel::SYSTEM, "Using cookies from file: " + cookieFile);
         }
     }
 
-    // Set callbacks
+    // Set callbacks - structured events only, no string logging
     DownloadCallbacks callbacks;
-    callbacks.on_log_message = [this](const std::string& message) {
-        emit logMessageReceived(QString::fromStdString(message));
-    };
     callbacks.on_stats_update = [this](const DownloadStats& stats) {
         emit statsReceived(stats);
     };
@@ -360,6 +757,25 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     callbacks.on_error = [this](const std::string& error) {
         emit errorOccurred(QString::fromStdString(error));
     };
+    callbacks.on_file_status_change = [this](const std::string& file_id, DownloadStatus status) {
+        // Only log at verbose level - this could be millions of messages
+        if (logLevel_ != LogLevel::VERBOSE && logLevel_ != LogLevel::DEBUG) return;
+        if (!logDownloadCheck_->isChecked()) return;
+
+        QString statusStr;
+        switch (status) {
+            case DownloadStatus::COMPLETED: statusStr = "completed"; break;
+            case DownloadStatus::FAILED: statusStr = "FAILED"; break;
+            case DownloadStatus::NOT_FOUND: statusStr = "404"; break;
+            default: return;  // Don't log other status changes
+        }
+        appendLog(QString("[DL]  %1: %2").arg(QString::fromStdString(file_id)).arg(statusStr));
+    };
+    callbacks.on_worker_state = [this](const std::string& worker_name, bool started) {
+        logNormal(LogChannel::SYSTEM, QString("%1 %2")
+            .arg(QString::fromStdString(worker_name))
+            .arg(started ? "started" : "finished"));
+    };
     downloadManager_->set_callbacks(callbacks);
 
     DataSetConfig config = get_data_set_config(dataSet);
@@ -370,6 +786,9 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     isPaused_.store(false);
 
     startButton_->setEnabled(false);
+    resumeButton_->setEnabled(false);
+    retryFailedButton_->setEnabled(false);
+    clearDataSetButton_->setEnabled(false);
     stopButton_->setEnabled(true);
     pauseButton_->setEnabled(true);
     dataSetCombo_->setEnabled(false);
@@ -379,29 +798,70 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
 
     // Use browser-based scraping for scraper mode
     if (mode == OperationMode::SCRAPER || mode == OperationMode::HYBRID) {
-        appendLog("Using browser-based scraping to bypass Akamai");
+        logNormal(LogChannel::SYSTEM, "Using browser-based scraping to bypass Akamai");
         startBrowserScraping(dataSet);
     }
 
     if (mode == OperationMode::BRUTE_FORCE || mode == OperationMode::HYBRID) {
         downloadManager_->start(config, mode);
-        appendLog(QString("Started downloading %1").arg(QString::fromStdString(config.name)));
+        logNormal(LogChannel::SYSTEM, QString("Started downloading %1").arg(QString::fromStdString(config.name)));
     }
 }
 
 void MainWindow::startBrowserScraping(int dataSet) {
     browserScrapingActive_.store(true);
-    currentScrapePage_.store(0);
     pdfFoundCount_.store(0);
     seenFileIds_.clear();
-    consecutiveDuplicatePages_ = 0;
+    detectedLastPage_ = -1;
+    detectingMaxPage_ = true;
 
-    appendLog(QString("Starting browser-based scraping for Data Set %1").arg(dataSet));
+    logNormal(LogChannel::SCRAPER, QString("Starting browser-based scraping for Data Set %1").arg(dataSet));
 
     auto config = get_data_set_config(dataSet);
+
+    // Set initial thread count and options from UI
+    downloadManager_->set_max_concurrent_downloads(threadCountSpin_->value());
+    downloadManager_->set_overwrite_existing(overwriteExistingCheck_->isChecked());
+
+    // Tell download manager that external scraping is active
+    downloadManager_->set_external_scraping_active(true);
+
     downloadManager_->start_download_only(config);
 
-    scrapeNextPage();
+    // Check if we already have detected total pages in the database
+    auto stats = downloadManager_->get_stats();
+    if (stats.total_pages > 0) {
+        logNormal(LogChannel::SCRAPER, QString("Resume: %1 pages already known").arg(stats.total_pages));
+        detectedLastPage_ = static_cast<int>(stats.total_pages - 1);
+        detectingMaxPage_ = false;
+
+        // Get unscraped pages
+        std::vector<int> unscraped = downloadManager_->get_unscraped_pages(dataSet, detectedLastPage_);
+        if (unscraped.empty()) {
+            logNormal(LogChannel::SCRAPER, "All pages already scraped according to database.");
+            onScrapingComplete();
+            return;
+        }
+
+        int tabCount = scraperTabCountSpin_->value();
+        scraperPool_->setPoolSize(tabCount);
+
+#ifdef HAVE_WEBENGINE
+        // Share browser profile with scraper pool for cookie sharing
+        scraperPool_->setCookieProfile(browserWidget_->profile());
+#endif
+
+        QList<int> pages;
+        for (int p : unscraped) pages.append(p);
+
+        logNormal(LogChannel::SCRAPER, QString("Resuming parallel scraping for %1 unscraped pages with %2 tab(s)").arg(pages.size()).arg(tabCount));
+        scraperPool_->startScrapingPages(QString::fromStdString(config.base_url), pages, detectedLastPage_ + 1);
+    } else {
+        // Load a high page number first - server will show the actual last page
+        logNormal(LogChannel::SCRAPER, "Detecting total page count via high-page probe...");
+        currentScrapePage_.store(99999);
+        scrapeNextPage();
+    }
 }
 
 void MainWindow::scrapeNextPage() {
@@ -428,6 +888,7 @@ void MainWindow::stopDownload() {
     statsTimer_->stop();
 
     if (downloadManager_) {
+        downloadManager_->set_external_scraping_active(false);
         downloadManager_->stop();
         downloadManager_.reset();
     }
@@ -436,13 +897,17 @@ void MainWindow::stopDownload() {
     isPaused_.store(false);
 
     startButton_->setEnabled(true);
+    resumeButton_->setEnabled(true);
+    retryFailedButton_->setEnabled(true);
+    clearDataSetButton_->setEnabled(true);
     stopButton_->setEnabled(false);
     pauseButton_->setEnabled(false);
     pauseButton_->setText("Pause");
     dataSetCombo_->setEnabled(true);
     modeCombo_->setEnabled(true);
+    activeDownloadsLabel_->setText("");
 
-    appendLog("Download stopped");
+    logNormal(LogChannel::SYSTEM, "Download stopped");
 }
 
 void MainWindow::pauseDownload() {
@@ -452,12 +917,12 @@ void MainWindow::pauseDownload() {
         downloadManager_->resume();
         isPaused_.store(false);
         pauseButton_->setText("Pause");
-        appendLog("Download resumed");
+        logNormal(LogChannel::SYSTEM, "Download resumed");
     } else {
         downloadManager_->pause();
         isPaused_.store(true);
         pauseButton_->setText("Resume");
-        appendLog("Download paused");
+        logNormal(LogChannel::SYSTEM, "Download paused");
     }
 }
 
@@ -465,6 +930,56 @@ void MainWindow::appendLog(const QString& message) {
     QString timestamp = QDateTime::currentDateTime().toString("[HH:mm:ss] ");
     QMutexLocker locker(&logMutex_);
     pendingLogs_.append(timestamp + message);
+}
+
+bool MainWindow::shouldLog(LogLevel level, LogChannel channel) const {
+    // Check verbosity level
+    if (static_cast<int>(level) > static_cast<int>(logLevel_)) {
+        return false;
+    }
+
+    // Check channel filter
+    switch (channel) {
+        case LogChannel::SYSTEM:
+            return logSystemCheck_->isChecked();
+        case LogChannel::SCRAPER:
+            return logScraperCheck_->isChecked();
+        case LogChannel::DOWNLOAD:
+            return logDownloadCheck_->isChecked();
+        case LogChannel::DEBUG:
+            return logDebugCheck_->isChecked();
+    }
+    return true;
+}
+
+void MainWindow::log(LogLevel level, LogChannel channel, const QString& message) {
+    if (!shouldLog(level, channel)) return;
+
+    // Add channel prefix
+    QString prefix;
+    switch (channel) {
+        case LogChannel::SYSTEM:   prefix = "[SYS] "; break;
+        case LogChannel::SCRAPER:  prefix = "[SCR] "; break;
+        case LogChannel::DOWNLOAD: prefix = "[DL]  "; break;
+        case LogChannel::DEBUG:    prefix = "[DBG] "; break;
+    }
+    appendLog(prefix + message);
+}
+
+void MainWindow::logQuiet(LogChannel channel, const QString& message) {
+    log(LogLevel::QUIET, channel, message);
+}
+
+void MainWindow::logNormal(LogChannel channel, const QString& message) {
+    log(LogLevel::NORMAL, channel, message);
+}
+
+void MainWindow::logVerbose(LogChannel channel, const QString& message) {
+    log(LogLevel::VERBOSE, channel, message);
+}
+
+void MainWindow::logDebug(LogChannel channel, const QString& message) {
+    log(LogLevel::DEBUG, channel, message);
 }
 
 void MainWindow::flushPendingLogs() {
@@ -519,6 +1034,7 @@ void MainWindow::updateStats(const DownloadStats& stats) {
     updateLabel(activeLabel_, QString::number(stats.files_in_progress));
     updateLabel(pagesLabel_, QString::number(stats.pages_scraped));
     updateLabel(speedLabel_, formatSpeed(stats.current_speed_bps));
+    updateLabel(wireSpeedLabel_, formatSpeed(stats.wire_speed_bps));
     updateLabel(bytesLabel_, formatBytes(stats.bytes_downloaded));
 
     // Scraper progress
@@ -549,18 +1065,89 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
     Q_UNUSED(url);
     if (!browserScrapingActive_.load()) return;
 
-    // Process in background thread
+    // Handle max page detection (first request to page 99999)
+    if (detectingMaxPage_) {
+        detectingMaxPage_ = false;
+
+        int maxFound = -1;
+
+        // Check if we got an anti-bot block (typically returns a challenge page)
+        bool isBlocked = html.contains("Access Denied") ||
+                         html.contains("captcha") ||
+                         html.contains("Please verify") ||
+                         html.contains("bot detection") ||
+                         html.contains("I am not a robot") ||
+                         html.contains("reauth()") ||
+                         html.contains("abuse-deterrent.js") ||
+                         html.length() < 1000;  // Suspiciously short response
+
+        if (isBlocked) {
+            logQuiet(LogChannel::SYSTEM, "CRITICAL: Anti-bot challenge detected in browser. Please solve the 'I am not a robot' challenge in the Browser tab.");
+            tabWidget_->setCurrentWidget(browserWidget_);
+        }
+
+        if (!isBlocked) {
+            // When requesting page 99999, the server redirects to the actual last page.
+            // The current page is marked with aria-current="page" in the pagination.
+            QRegularExpression currentPageRe(R"(<a[^>]*href=["']\?page=(\d+)["'][^>]*aria-current=["']page["']|<a[^>]*aria-current=["']page["'][^>]*href=["']\?page=(\d+)["'])");
+            QRegularExpressionMatch currentMatch = currentPageRe.match(html);
+            if (currentMatch.hasMatch()) {
+                QString captured = currentMatch.captured(1).isEmpty() ? currentMatch.captured(2) : currentMatch.captured(1);
+                maxFound = captured.toInt();
+            }
+        }
+
+        if (maxFound >= 0) {
+            detectedLastPage_ = maxFound;
+            logNormal(LogChannel::SCRAPER, QString("Detected %1 pages total (page 0 to %2)").arg(maxFound + 1).arg(maxFound));
+            updateProgressBar(scraperProgress_, 0);
+            updateLabel(scraperLabel_, QString("0 / %1 pages").arg(maxFound + 1));
+
+            // Start multi-tab scraping using the scraper pool
+            auto config = get_data_set_config(selectedDataSet_);
+            int tabCount = scraperTabCountSpin_->value();
+            scraperPool_->setPoolSize(tabCount);
+
+#ifdef HAVE_WEBENGINE
+            // Share browser profile with scraper pool for cookie sharing
+            scraperPool_->setCookieProfile(browserWidget_->profile());
+#endif
+
+            logNormal(LogChannel::SCRAPER, QString("Starting parallel scraping with %1 tab(s)").arg(tabCount));
+            scraperPool_->startScraping(QString::fromStdString(config.base_url), maxFound);
+        } else {
+            // Couldn't detect max page (anti-bot or other issue)
+            // Fall back to sequential scraping, stop when no "Next" link
+            detectedLastPage_ = -1;
+            if (isBlocked) {
+                logNormal(LogChannel::SCRAPER, "Anti-bot detected on page probe - starting from page 0, will stop at last page");
+            } else {
+                logNormal(LogChannel::SCRAPER, "Could not detect page count - starting from page 0, will stop at last page");
+            }
+            updateLabel(scraperLabel_, "Scraping pages (unknown total)...");
+            currentScrapePage_.store(0);
+            scrapeNextPage();
+        }
+        return;
+    }
+
+    // Sequential scraping mode (fallback when max page detection failed)
+    // This processes each page and checks for "Next" link
     auto config = get_data_set_config(selectedDataSet_);
     int dataSet = selectedDataSet_;
     QString downloadPath = downloadPathEdit_->text();
     int currentPage = currentScrapePage_.load();
 
+    // Check for "Next" link
+    bool hasNextPage = html.contains("aria-label=\"Next page\"") ||
+                       html.contains("pagination__link--next") ||
+                       html.contains(">Next<");
+
     // Copy seen IDs for thread safety
     QSet<QString> seenCopy = seenFileIds_;
 
-    QtConcurrent::run([this, html, config, dataSet, downloadPath, currentPage, seenCopy]() mutable {
+    QtConcurrent::run([this, html, config, dataSet, downloadPath, currentPage, hasNextPage, seenCopy]() mutable {
         int newPdfCount = 0;
-        int totalOnPage = 0;
         QRegularExpression re(R"(EFTA(\d{8}))", QRegularExpression::CaseInsensitiveOption);
         QRegularExpressionMatchIterator it = re.globalMatch(html);
 
@@ -573,9 +1160,7 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
 
             if (!pageIds.contains(fileId)) {
                 pageIds.insert(fileId);
-                totalOnPage++;
 
-                // Only count as new if we haven't seen this ID before
                 if (!seenCopy.contains(fileId)) {
                     newPdfCount++;
 
@@ -592,68 +1177,134 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
         }
 
         if (downloadManager_ && !filesToAdd.empty()) {
+            std::cerr << "[DEBUG GUI] Adding " << filesToAdd.size() << " files to queue from page " << currentPage << std::endl;
             downloadManager_->add_files_to_queue(filesToAdd);
         }
 
-        // Update UI on main thread
-        QMetaObject::invokeMethod(this, [this, newPdfCount, totalOnPage, currentPage, pageIds]() {
+        // Mark page as scraped in database (sequential fallback mode)
+        if (downloadManager_) {
+            downloadManager_->mark_page_scraped(dataSet, currentPage, newPdfCount);
+        }
+
+        QMetaObject::invokeMethod(this, [this, newPdfCount, currentPage, hasNextPage, pageIds]() {
             if (!browserScrapingActive_.load()) return;
 
-            // Add new IDs to seen set
             seenFileIds_.unite(pageIds);
-
             int newTotal = pdfFoundCount_.fetch_add(newPdfCount) + newPdfCount;
 
-            if (newPdfCount == 0 && totalOnPage > 0) {
-                // Page had PDFs but all were duplicates
-                consecutiveDuplicatePages_++;
-                appendLog(QString("Page %1: %2 PDFs (all duplicates, streak: %3)")
-                    .arg(currentPage).arg(totalOnPage).arg(consecutiveDuplicatePages_));
+            updateLabel(scraperLabel_, QString("Page %1 - %2 PDFs total").arg(currentPage + 1).arg(newTotal));
+            logNormal(LogChannel::SCRAPER, QString("Page %1: %2 new PDFs (total: %3)")
+                .arg(currentPage).arg(newPdfCount).arg(newTotal));
 
-                if (consecutiveDuplicatePages_ >= 3) {
-                    appendLog(QString("Scraping complete! %1 unique PDFs found (3 duplicate pages in a row)")
-                        .arg(newTotal));
-                    browserScrapingActive_.store(false);
-                    return;
-                }
-            } else if (newPdfCount > 0) {
-                consecutiveDuplicatePages_ = 0;
-                appendLog(QString("Page %1: %2 new PDFs (total: %3)")
-                    .arg(currentPage).arg(newPdfCount).arg(newTotal));
-            } else {
-                // No PDFs at all on page
-                appendLog(QString("Page %1: no PDFs found").arg(currentPage));
-                appendLog(QString("Scraping complete! %1 unique PDFs found").arg(newTotal));
+            if (!hasNextPage) {
+                // No more pages - scraping complete
+                logQuiet(LogChannel::SCRAPER, QString("Scraping complete! %1 unique PDFs across %2 pages")
+                    .arg(newTotal).arg(currentPage + 1));
                 browserScrapingActive_.store(false);
+
+                if (downloadManager_) {
+                    downloadManager_->set_external_scraping_active(false);
+                }
                 return;
             }
 
-            updateProgressBar(scraperProgress_, currentPage % 100);
-            updateLabel(scraperLabel_, QString("Page %1 - %2 PDFs found")
-                .arg(currentPage).arg(newTotal));
-
-            int nextPage = currentScrapePage_.fetch_add(1) + 1;
-            if (nextPage < maxScrapePage_) {
-                scrapeTimer_->start(1500);
-            } else {
-                appendLog("Reached max page limit");
-                browserScrapingActive_.store(false);
-            }
+            // Continue to next page
+            currentScrapePage_.fetch_add(1);
+            scrapeTimer_->start(1500);  // Wait 1.5s between pages to avoid rate limiting
         }, Qt::QueuedConnection);
     });
 }
 
+void MainWindow::onScraperPageReady(int pageNumber, const QString& html) {
+    if (!browserScrapingActive_.load()) return;
+
+    auto config = get_data_set_config(selectedDataSet_);
+    int dataSet = selectedDataSet_;
+    QString downloadPath = downloadPathEdit_->text();
+
+    // Copy seen IDs for thread safety
+    QSet<QString> seenCopy = seenFileIds_;
+
+    QtConcurrent::run([this, html, config, dataSet, downloadPath, pageNumber, seenCopy]() mutable {
+        int newPdfCount = 0;
+        QRegularExpression re(R"(EFTA(\d{8}))", QRegularExpression::CaseInsensitiveOption);
+        QRegularExpressionMatchIterator it = re.globalMatch(html);
+
+        QSet<QString> pageIds;
+        std::vector<std::tuple<std::string, std::string, std::string>> filesToAdd;
+
+        while (it.hasNext()) {
+            QRegularExpressionMatch match = it.next();
+            QString fileId = "EFTA" + match.captured(1);
+
+            if (!pageIds.contains(fileId)) {
+                pageIds.insert(fileId);
+
+                if (!seenCopy.contains(fileId)) {
+                    newPdfCount++;
+
+                    std::string stdFileId = fileId.toStdString();
+                    std::string fileUrl = config.file_url_base + stdFileId + ".pdf";
+                    std::string subdir = stdFileId.substr(4, 3);
+                    std::string localPath = downloadPath.toStdString() +
+                        "/DataSet" + std::to_string(dataSet) + "/" +
+                        subdir + "/" + stdFileId + ".pdf";
+
+                    filesToAdd.emplace_back(stdFileId, fileUrl, localPath);
+                }
+            }
+        }
+
+        if (downloadManager_ && !filesToAdd.empty()) {
+            std::cerr << "[DEBUG GUI] Adding " << filesToAdd.size() << " files to queue from page " << pageNumber << std::endl;
+            downloadManager_->add_files_to_queue(filesToAdd);
+        }
+
+        // Mark page as scraped in database
+        if (downloadManager_) {
+            downloadManager_->mark_page_scraped(dataSet, pageNumber, newPdfCount);
+        }
+
+        QMetaObject::invokeMethod(this, [this, newPdfCount, pageNumber, pageIds]() {
+            if (!browserScrapingActive_.load()) return;
+
+            seenFileIds_.unite(pageIds);
+            int newTotal = pdfFoundCount_.fetch_add(newPdfCount) + newPdfCount;
+
+            logNormal(LogChannel::SCRAPER, QString("Page %1: %2 new PDFs (total: %3)")
+                .arg(pageNumber).arg(newPdfCount).arg(newTotal));
+        }, Qt::QueuedConnection);
+    });
+}
+
+void MainWindow::onScrapingComplete() {
+    if (!browserScrapingActive_.load()) return;
+
+    int totalPdfs = pdfFoundCount_.load();
+    int totalPages = scraperPool_->totalPages();
+
+    logQuiet(LogChannel::SCRAPER, QString("Scraping complete! %1 unique PDFs across %2 pages")
+        .arg(totalPdfs).arg(totalPages));
+
+    browserScrapingActive_.store(false);
+
+    // Tell download manager that external scraping is done
+    if (downloadManager_) {
+        downloadManager_->set_external_scraping_active(false);
+    }
+}
+
 void MainWindow::handlePageScraped(int page, int count) {
-    appendLog(QString("Scraped page %1 (%2 PDFs)").arg(page).arg(count));
+    logNormal(LogChannel::SCRAPER, QString("Scraped page %1 (%2 PDFs)").arg(page).arg(count));
 }
 
 void MainWindow::handleDownloadComplete() {
-    appendLog("Download complete!");
+    logQuiet(LogChannel::SYSTEM, "Download complete!");
     stopDownload();
 }
 
 void MainWindow::handleError(const QString& error) {
-    appendLog("ERROR: " + error);
+    logQuiet(LogChannel::SYSTEM, "ERROR: " + error);
 }
 
 void MainWindow::processBrowserHtml(const QString& html) {

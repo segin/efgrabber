@@ -1,4 +1,5 @@
 #include "efgrabber/thread_pool.h"
+#include <iostream>
 
 namespace efgrabber {
 
@@ -31,7 +32,13 @@ void ThreadPool::worker_thread() {
         }
 
         active_tasks_++;
-        task();
+        try {
+            task();
+        } catch (const std::exception& e) {
+            std::cerr << "[ThreadPool] Task exception: " << e.what() << std::endl;
+        } catch (...) {
+            std::cerr << "[ThreadPool] Task unknown exception" << std::endl;
+        }
         active_tasks_--;
         completed_tasks_++;
 
@@ -43,7 +50,8 @@ void ThreadPool::submit_detached(std::function<void()> task) {
     {
         std::unique_lock<std::mutex> lock(queue_mutex_);
         if (stop_) {
-            throw std::runtime_error("Cannot submit to stopped thread pool");
+            // Silently ignore submissions to stopped pool instead of throwing
+            return;
         }
         tasks_.emplace(std::move(task));
         total_tasks_++;

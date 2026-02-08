@@ -18,8 +18,10 @@ struct DownloadResult {
     int http_code;
     std::string error_message;
     std::vector<char> data;
-    int64_t content_length;
+    int64_t content_length;      // Actual bytes downloaded
+    int64_t expected_length;     // Content-Length header from server (0 if not provided)
     std::string content_type;
+    int64_t download_time_ms;    // Actual transfer time in milliseconds (wire time)
 };
 
 // Progress callback signature

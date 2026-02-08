@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <cstring>
+#include <optional>
 
 namespace efgrabber {
 
@@ -366,8 +367,9 @@ std::vector<FileRecord> Database::get_failed_files(int max_retries, int limit) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = R"(
         SELECT id, data_set, file_id, url, local_path, status, file_size,
-               retry_count, error_message
-        FROM files WHERE status = 'FAILED' AND retry_count < ? LIMIT ?
+               retry_count, error_message, strftime('%s', updated_at)
+        FROM files WHERE status = 'FAILED' AND retry_count < ?
+        ORDER BY updated_at ASC LIMIT ?
     )";
 
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -391,6 +393,11 @@ std::vector<FileRecord> Database::get_failed_files(int max_retries, int limit) {
         record.retry_count = sqlite3_column_int(stmt, 7);
         const char* error = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 8));
         record.error_message = error ? error : "";
+
+        // Convert unix timestamp to time_point
+        int64_t unix_time = sqlite3_column_int64(stmt, 9);
+        record.updated_at = std::chrono::system_clock::from_time_t(static_cast<time_t>(unix_time));
+
         result.push_back(std::move(record));
     }
 
@@ -536,6 +543,41 @@ std::vector<int> Database::get_unscraped_pages(int data_set, int limit) {
     return result;
 }
 
+std::optional<PageRecord> Database::get_page(int data_set, int page_number) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = R"(
+        SELECT id, data_set, page_number, scraped, pdf_count, scraped_at
+        FROM pages WHERE data_set = ? AND page_number = ? LIMIT 1
+    )";
+
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    if (rc != SQLITE_OK) {
+        return std::nullopt;
+    }
+
+    sqlite3_bind_int(stmt, 1, data_set);
+    sqlite3_bind_int(stmt, 2, page_number);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return std::nullopt;
+    }
+
+    PageRecord record;
+    record.id = sqlite3_column_int64(stmt, 0);
+    record.data_set = sqlite3_column_int(stmt, 1);
+    record.page_number = sqlite3_column_int(stmt, 2);
+    record.scraped = sqlite3_column_int(stmt, 3) != 0;
+    record.pdf_count = sqlite3_column_int(stmt, 4);
+    // scraped_at handling - skip for now
+
+    sqlite3_finalize(stmt);
+    return record;
+}
+
 bool Database::page_exists(int data_set, int page_number) {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -649,6 +691,103 @@ int64_t Database::get_completed_files(int data_set) {
     }
     sqlite3_finalize(stmt);
     return count;
+}
+
+int Database::reset_in_progress_files(int data_set) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE files SET status = 'PENDING' WHERE data_set = ? AND status = 'IN_PROGRESS'";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, data_set);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        return -1;
+    }
+    return sqlite3_changes(db_);
+}
+
+int Database::reset_failed_files(int data_set) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE files SET status = 'PENDING', retry_count = 0, error_message = NULL WHERE data_set = ? AND status = 'FAILED'";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, data_set);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        return -1;
+    }
+    return sqlite3_changes(db_);
+}
+
+bool Database::has_existing_work(int data_set) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT 1 FROM files WHERE data_set = ? AND status IN ('PENDING', 'IN_PROGRESS', 'FAILED') LIMIT 1";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_int(stmt, 1, data_set);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return rc == SQLITE_ROW;
+}
+
+int Database::clear_data_set(int data_set) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Delete files
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "DELETE FROM files WHERE data_set = ?";
+
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, data_set);
+    int rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        return -1;
+    }
+
+    int deleted_files = sqlite3_changes(db_);
+
+    // Delete pages
+    sql = "DELETE FROM pages WHERE data_set = ?";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, data_set);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    // Delete progress
+    sql = "DELETE FROM progress WHERE data_set = ?";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_int(stmt, 1, data_set);
+        sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+    }
+
+    return deleted_files;
 }
 
 bool Database::set_brute_force_progress(int data_set, uint64_t current_id) {

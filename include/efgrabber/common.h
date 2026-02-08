@@ -175,7 +175,8 @@ struct DownloadStats {
     // Timing
     std::chrono::system_clock::time_point start_time;
     int64_t bytes_downloaded;
-    double current_speed_bps;   // Bytes per second
+    double current_speed_bps;   // Wall time speed: bytes / total elapsed time
+    double wire_speed_bps;      // Wire time speed: bytes / actual transfer time
 };
 
 // Constants

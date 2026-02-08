@@ -89,6 +89,8 @@ if(BUILD_GUI)
         src/gui/main_window_qt.h
         src/gui/browser_widget.cpp
         src/gui/browser_widget.h
+        src/gui/scraper_pool.cpp
+        src/gui/scraper_pool.h
     )
 
     add_executable(efgrabber

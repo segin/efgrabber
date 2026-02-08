@@ -156,6 +156,12 @@ bool BrowserWidget::hasCookiesFor(const QString& domain) const {
 #endif
 }
 
+#ifdef HAVE_WEBENGINE
+QWebEngineProfile* BrowserWidget::profile() const {
+    return webView_->page()->profile();
+}
+#endif
+
 void BrowserWidget::goToDataSet(int dataSet) {
     QString url = QString("https://www.justice.gov/epstein/doj-disclosures/data-set-%1-files").arg(dataSet);
     navigateTo(url);

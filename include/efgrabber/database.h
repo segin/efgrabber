@@ -58,6 +58,12 @@ public:
     int64_t get_total_files(int data_set);
     int64_t get_completed_files(int data_set);
 
+    // Resume/retry operations
+    int reset_in_progress_files(int data_set);  // Reset IN_PROGRESS to PENDING (for crash recovery)
+    int reset_failed_files(int data_set);       // Reset FAILED to PENDING (for retry)
+    bool has_existing_work(int data_set);       // Check if there's pending/failed work
+    int clear_data_set(int data_set);           // Delete all records for a data set
+
     // Brute force mode tracking
     bool set_brute_force_progress(int data_set, uint64_t current_id);
     uint64_t get_brute_force_progress(int data_set);

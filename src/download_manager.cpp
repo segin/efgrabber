@@ -1,19 +1,63 @@
 #include "efgrabber/download_manager.h"
 #include <filesystem>
 #include <iostream>
+#include <fstream>
 #include <sstream>
 #include <iomanip>
+
+#include <cmath>
 
 namespace fs = std::filesystem;
 
 namespace efgrabber {
+
+// S-curve (sigmoid) backoff calculation
+// Delay increases slowly at first, then rapidly, then plateaus
+static int64_t calculate_s_curve_backoff(int retry_count) {
+    if (retry_count <= 0) return 0;
+
+    const double max_delay = 600.0; // 10 minutes max
+    const double min_delay = 5.0;   // 5 seconds min
+    const double k = 1.0;           // Steepness
+    const double mid = 5.0;         // Halfway point at 5 retries
+
+    double delay = min_delay + (max_delay - min_delay) / (1.0 + std::exp(-k * (retry_count - mid)));
+    return static_cast<int64_t>(delay);
+}
 
 DownloadManager::DownloadManager(const std::string& db_path, const std::string& download_dir)
     : db_path_(db_path), download_dir_(download_dir) {
 }
 
 DownloadManager::~DownloadManager() {
-    stop();
+    // Always stop and join threads, even if already stopped
+    stop_requested_ = true;
+    paused_ = false;
+    pause_cv_.notify_all();
+
+    // Join all threads if joinable
+    if (scraper_thread_.joinable()) {
+        scraper_thread_.join();
+    }
+    if (brute_force_thread_.joinable()) {
+        brute_force_thread_.join();
+    }
+    if (download_thread_.joinable()) {
+        download_thread_.join();
+    }
+    if (stats_thread_.joinable()) {
+        stats_thread_.join();
+    }
+
+    // Shutdown thread pools
+    if (download_pool_) {
+        download_pool_->shutdown();
+    }
+    if (scrape_pool_) {
+        scrape_pool_->shutdown();
+    }
+
+    running_ = false;
 }
 
 bool DownloadManager::initialize() {
@@ -59,6 +103,9 @@ void DownloadManager::start(const DataSetConfig& config, OperationMode mode) {
 
     start_time_ = std::chrono::steady_clock::now();
     bytes_this_session_ = 0;
+    wire_time_ms_ = 0;
+    active_transfer_wall_ms_ = 0;
+    any_download_active_ = false;
 
     // Create scraper
     scraper_ = std::make_unique<Scraper>(config);
@@ -82,7 +129,7 @@ void DownloadManager::start(const DataSetConfig& config, OperationMode mode) {
     stats_thread_ = std::thread(&DownloadManager::stats_worker, this);
 
     // Start download worker
-    std::thread(&DownloadManager::download_worker, this).detach();
+    download_thread_ = std::thread(&DownloadManager::download_worker, this);
 }
 
 void DownloadManager::start_download_only(const DataSetConfig& config) {
@@ -106,6 +153,9 @@ void DownloadManager::start_download_only(const DataSetConfig& config) {
 
     start_time_ = std::chrono::steady_clock::now();
     bytes_this_session_ = 0;
+    wire_time_ms_ = 0;
+    active_transfer_wall_ms_ = 0;
+    any_download_active_ = false;
 
     // Create scraper (needed for file URL building)
     scraper_ = std::make_unique<Scraper>(config);
@@ -135,6 +185,9 @@ void DownloadManager::stop() {
     }
     if (brute_force_thread_.joinable()) {
         brute_force_thread_.join();
+    }
+    if (download_thread_.joinable()) {
+        download_thread_.join();
     }
     if (stats_thread_.joinable()) {
         stats_thread_.join();
@@ -181,7 +234,7 @@ void DownloadManager::set_callbacks(const DownloadCallbacks& callbacks) {
 }
 
 void DownloadManager::set_max_concurrent_downloads(int max) {
-    max_concurrent_downloads_ = max;
+    max_concurrent_downloads_.store(max);
 }
 
 void DownloadManager::set_max_concurrent_scrapes(int max) {
@@ -198,6 +251,14 @@ void DownloadManager::set_cookie_file(const std::string& cookie_file) {
 
 void DownloadManager::set_cookie_string(const std::string& cookies) {
     cookie_string_ = cookies;
+}
+
+void DownloadManager::set_overwrite_existing(bool overwrite) {
+    overwrite_existing_ = overwrite;
+}
+
+void DownloadManager::set_external_scraping_active(bool active) {
+    external_scraping_active_.store(active);
 }
 
 void DownloadManager::add_file_to_queue(const std::string& file_id, const std::string& url, const std::string& local_path) {
@@ -219,7 +280,12 @@ void DownloadManager::add_file_to_queue(const std::string& file_id, const std::s
 }
 
 void DownloadManager::add_files_to_queue(const std::vector<std::tuple<std::string, std::string, std::string>>& files) {
-    if (!db_ || files.empty()) return;
+    if (!db_ || files.empty()) {
+        std::cerr << "[DEBUG] add_files_to_queue: db_=" << (db_ ? "valid" : "null") << ", files.size()=" << files.size() << std::endl;
+        return;
+    }
+
+    std::cerr << "[DEBUG] add_files_to_queue: Adding " << files.size() << " files to queue" << std::endl;
 
     std::vector<FileRecord> records;
     records.reserve(files.size());
@@ -239,9 +305,53 @@ void DownloadManager::add_files_to_queue(const std::vector<std::tuple<std::strin
         records.push_back(std::move(record));
     }
 
+    std::cerr << "[DEBUG] add_files_to_queue: " << records.size() << " new records (after dedup)" << std::endl;
+
     if (!records.empty()) {
         db_->add_files_batch(records);
+        std::cerr << "[DEBUG] add_files_to_queue: Added to database" << std::endl;
     }
+}
+
+int DownloadManager::reset_interrupted_downloads(int data_set) {
+    if (!db_) return -1;
+    return db_->reset_in_progress_files(data_set);
+}
+
+int DownloadManager::retry_failed_downloads(int data_set) {
+    if (!db_) return -1;
+    return db_->reset_failed_files(data_set);
+}
+
+bool DownloadManager::has_pending_work(int data_set) {
+    if (!db_) return false;
+    return db_->has_existing_work(data_set);
+}
+
+int DownloadManager::clear_data_set(int data_set) {
+    if (!db_) return -1;
+    return db_->clear_data_set(data_set);
+}
+
+void DownloadManager::mark_page_scraped(int data_set, int page_number, int pdf_count) {
+    if (!db_) return;
+    db_->mark_page_scraped(data_set, page_number, pdf_count);
+}
+
+bool DownloadManager::is_page_scraped(int data_set, int page_number) {
+    if (!db_) return false;
+    auto page = db_->get_page(data_set, page_number);
+    return page.has_value() && page->scraped;
+}
+
+std::vector<int> DownloadManager::get_unscraped_pages(int data_set, int max_page) {
+    if (!db_) return {};
+
+    // First ensure all pages exist in the database
+    db_->add_pages_batch(data_set, 0, max_page);
+
+    // Get unscraped pages
+    return db_->get_unscraped_pages(data_set, max_page + 1);
 }
 
 void DownloadManager::scraper_worker() {
@@ -409,7 +519,7 @@ void DownloadManager::brute_force_worker() {
 }
 
 void DownloadManager::download_worker() {
-    log("Download worker started");
+    std::cerr << "[DEBUG] download_worker: Started" << std::endl;
 
     while (!stop_requested_) {
         // Check for pause
@@ -420,39 +530,74 @@ void DownloadManager::download_worker() {
 
         if (stop_requested_) break;
 
+        int max_downloads = max_concurrent_downloads_.load();
+
         // Check if we have capacity
-        while (active_downloads_.load() >= max_concurrent_downloads_ && !stop_requested_) {
+        while (active_downloads_.load() >= max_downloads && !stop_requested_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            max_downloads = max_concurrent_downloads_.load();  // Re-check in case it changed
         }
 
         if (stop_requested_) break;
 
         // Get pending files
-        auto files = db_->get_pending_files(max_concurrent_downloads_ - active_downloads_.load());
+        int want = max_downloads - active_downloads_.load();
+        auto files = db_->get_pending_files(want);
+        std::cerr << "[DEBUG] download_worker: Requested " << want << " pending files, got " << files.size() << std::endl;
 
         if (files.empty()) {
-            // Check for failed files to retry
-            files = db_->get_failed_files(max_retry_attempts_, 100);
+            // Check for failed files to retry with S-curve backoff
+            auto failed = db_->get_failed_files(max_retry_attempts_, 100);
+            auto now = std::chrono::system_clock::now();
+
+            for (const auto& f : failed) {
+                int64_t wait_sec = calculate_s_curve_backoff(f.retry_count);
+                auto ready_time = f.updated_at + std::chrono::seconds(wait_sec);
+
+                if (now >= ready_time) {
+                    files.push_back(f);
+                    if (static_cast<int>(files.size()) >= want) break;
+                }
+            }
         }
 
         if (files.empty()) {
-            // No work to do, check if we're done
-            auto stats = db_->get_stats(current_config_.id);
-            if (stats.files_pending == 0 && stats.files_in_progress == 0) {
-                // Check if scraper/brute force workers are done
-                bool scraper_done = !scraper_thread_.joinable() ||
-                                   current_mode_ == OperationMode::BRUTE_FORCE;
-                bool bf_done = !brute_force_thread_.joinable() ||
-                              current_mode_ == OperationMode::SCRAPER;
+            // No work to do, check if we should wait or exit
+            int64_t active = active_downloads_.load();
 
-                if (scraper_done && bf_done) {
-                    log("All downloads complete");
-                    break;
-                }
+            // If downloads are still in progress, wait for them
+            if (active > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            continue;
+            // If external scraping is active, wait for more files
+            if (external_scraping_active_.load()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+
+            // Check if scraper/brute force workers are still running
+            bool scraper_done = !scraper_thread_.joinable() ||
+                               current_mode_ == OperationMode::BRUTE_FORCE;
+            bool bf_done = !brute_force_thread_.joinable() ||
+                          current_mode_ == OperationMode::SCRAPER;
+
+            if (!scraper_done || !bf_done) {
+                // Workers still running, wait for them to add more files
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                continue;
+            }
+
+            // Double-check: query database one more time before exiting
+            auto db_stats = db_->get_stats(current_config_.id);
+            if (db_stats.files_pending > 0 || db_stats.files_in_progress > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+
+            log("All downloads complete");
+            break;
         }
 
         // Submit download tasks
@@ -471,6 +616,15 @@ void DownloadManager::download_worker() {
     }
 
     log("Download worker finished");
+
+    // Signal completion if we exited normally (not stopped)
+    if (!stop_requested_) {
+        running_ = false;
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        if (callbacks_.on_complete) {
+            callbacks_.on_complete();
+        }
+    }
 }
 
 void DownloadManager::stats_worker() {
@@ -532,56 +686,106 @@ void DownloadManager::scrape_page(int page_number) {
 }
 
 void DownloadManager::download_file(const FileRecord& file) {
-    // Check if file already exists locally and has content
-    if (fs::exists(file.local_path) && fs::file_size(file.local_path) > 0) {
-        db_->update_file_status(file.id, DownloadStatus::SKIPPED);
-        return;
-    }
-
-    // Create directory structure
-    fs::path filepath(file.local_path);
-    fs::create_directories(filepath.parent_path());
-
-    Downloader downloader;
-    if (!cookie_string_.empty()) {
-        downloader.set_cookie(cookie_string_);
-    } else if (!cookie_file_.empty()) {
-        downloader.set_cookie_file(cookie_file_);
-    }
-    auto result = downloader.download_to_file(file.url, file.local_path);
-
-    if (result.http_code == 404) {
-        // Delete empty file if created
-        if (fs::exists(file.local_path)) {
-            fs::remove(file.local_path);
+    try {
+        // Check if file already exists locally and has content
+        if (!overwrite_existing_ && fs::exists(file.local_path) && fs::file_size(file.local_path) > 0) {
+            db_->update_file_status(file.id, DownloadStatus::SKIPPED);
+            return;
         }
-        db_->update_file_status(file.id, DownloadStatus::NOT_FOUND, "404 Not Found");
-    } else if (result.success && result.content_length > 0) {
-        // Success - non-empty response
-        bytes_this_session_ += result.content_length;
-        db_->update_file_status(file.id, DownloadStatus::COMPLETED, "", result.content_length);
 
-        std::lock_guard<std::mutex> lock(callback_mutex_);
-        if (callbacks_.on_file_status_change) {
-            callbacks_.on_file_status_change(file.file_id, DownloadStatus::COMPLETED);
-        }
-    } else if (result.success && result.content_length == 0) {
-        // Empty response - delete and mark not found
-        if (fs::exists(file.local_path)) {
-            fs::remove(file.local_path);
-        }
-        db_->update_file_status(file.id, DownloadStatus::NOT_FOUND, "Empty response");
-    } else {
-        // Download failed - delete empty file
-        if (fs::exists(file.local_path)) {
-            fs::remove(file.local_path);
-        }
-        db_->increment_retry_count(file.id);
-        db_->update_file_status(file.id, DownloadStatus::FAILED, result.error_message);
+        // Create directory structure
+        fs::path filepath(file.local_path);
+        fs::create_directories(filepath.parent_path());
 
-        std::lock_guard<std::mutex> lock(callback_mutex_);
-        if (callbacks_.on_file_status_change) {
-            callbacks_.on_file_status_change(file.file_id, DownloadStatus::FAILED);
+        // Track when this download starts for active transfer time
+        auto download_start = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(transfer_time_mutex_);
+            if (!any_download_active_.load()) {
+                first_active_time_ = download_start;
+                any_download_active_.store(true);
+            }
+        }
+
+        Downloader downloader;
+        if (!cookie_string_.empty()) {
+            downloader.set_cookie(cookie_string_);
+        } else if (!cookie_file_.empty()) {
+            downloader.set_cookie_file(cookie_file_);
+        }
+        auto result = downloader.download_to_file(file.url, file.local_path);
+
+        // Track when this download ends
+        auto download_end = std::chrono::steady_clock::now();
+        {
+            std::lock_guard<std::mutex> lock(transfer_time_mutex_);
+            last_active_time_ = download_end;
+            // Update active transfer wall time (time from first active to now)
+            active_transfer_wall_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+                last_active_time_ - first_active_time_).count();
+        }
+
+        if (result.http_code == 404) {
+            // Delete empty file if created
+            if (fs::exists(file.local_path)) {
+                fs::remove(file.local_path);
+            }
+            db_->update_file_status(file.id, DownloadStatus::NOT_FOUND, "404 Not Found");
+        } else if (result.http_code == 403 || result.http_code == 429) {
+            // Forbidden or rate limited - anti-bot triggered
+            if (fs::exists(file.local_path)) {
+                fs::remove(file.local_path);
+            }
+            db_->increment_retry_count(file.id);
+            db_->update_file_status(file.id, DownloadStatus::FAILED,
+                "Blocked: HTTP " + std::to_string(result.http_code));
+
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (callbacks_.on_file_status_change) {
+                callbacks_.on_file_status_change(file.file_id, DownloadStatus::FAILED);
+            }
+        } else if (result.success && result.content_length > 0) {
+            // Success - file downloaded (content type not validated per user request)
+            bytes_this_session_ += result.content_length;
+            wire_time_ms_ += result.download_time_ms;
+            db_->update_file_status(file.id, DownloadStatus::COMPLETED, "", result.content_length);
+
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (callbacks_.on_file_status_change) {
+                callbacks_.on_file_status_change(file.file_id, DownloadStatus::COMPLETED);
+            }
+        } else if (result.success && result.content_length == 0) {
+            // Empty response - delete and mark not found
+            if (fs::exists(file.local_path)) {
+                fs::remove(file.local_path);
+            }
+            db_->update_file_status(file.id, DownloadStatus::NOT_FOUND, "Empty response");
+        } else {
+            // Download failed - delete empty file
+            if (fs::exists(file.local_path)) {
+                fs::remove(file.local_path);
+            }
+            db_->increment_retry_count(file.id);
+            db_->update_file_status(file.id, DownloadStatus::FAILED, result.error_message);
+
+            std::lock_guard<std::mutex> lock(callback_mutex_);
+            if (callbacks_.on_file_status_change) {
+                callbacks_.on_file_status_change(file.file_id, DownloadStatus::FAILED);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "[ERROR] download_file exception for " << file.file_id << ": " << e.what() << std::endl;
+        try {
+            db_->update_file_status(file.id, DownloadStatus::FAILED, std::string("Exception: ") + e.what());
+        } catch (...) {
+            // Ignore nested exceptions
+        }
+    } catch (...) {
+        std::cerr << "[ERROR] download_file unknown exception for " << file.file_id << std::endl;
+        try {
+            db_->update_file_status(file.id, DownloadStatus::FAILED, "Unknown exception");
+        } catch (...) {
+            // Ignore nested exceptions
         }
     }
 }
@@ -602,10 +806,9 @@ std::string DownloadManager::get_local_path(const std::string& file_id) const {
 }
 
 void DownloadManager::log(const std::string& message) {
-    std::lock_guard<std::mutex> lock(callback_mutex_);
-    if (callbacks_.on_log_message) {
-        callbacks_.on_log_message(message);
-    }
+    // No-op: the download manager no longer logs.
+    // The GUI handles logging based on structured event callbacks.
+    (void)message;
 }
 
 void DownloadManager::update_stats() {
@@ -628,6 +831,15 @@ void DownloadManager::update_stats() {
 
         if (elapsed > 0) {
             stats_.current_speed_bps = bytes_this_session_.load() / elapsed;
+        }
+
+        // Wire speed: bytes / wall time during which downloads were active
+        // This gives aggregate throughput excluding idle time waiting for scraper
+        int64_t active_wall_ms = active_transfer_wall_ms_.load();
+        if (active_wall_ms > 0) {
+            stats_.wire_speed_bps = (bytes_this_session_.load() * 1000.0) / active_wall_ms;
+        } else {
+            stats_.wire_speed_bps = 0;
         }
     }
 
