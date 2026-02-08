@@ -1,3 +1,10 @@
+/*
+ * include/efgrabber/database.h - SQLite database interface for storing file and page records
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #pragma once
 
 #include <string>

@@ -1,3 +1,10 @@
+/*
+ * src/gui/main_window_qt.cpp - Implementation of the main window class
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include "main_window_qt.h"
 #include <QDateTime>
 #include <QScrollBar>
@@ -72,6 +79,10 @@ void MainWindow::loadSettings() {
     logScraperCheck_->setChecked(settings.value("log/showScraper", true).toBool());
     logDownloadCheck_->setChecked(settings.value("log/showDownload", true).toBool());
     logDebugCheck_->setChecked(settings.value("log/showDebug", false).toBool());
+
+    // Restore force parallel settings
+    forceParallelCheck_->setChecked(settings.value("scraper/forceParallel", false).toBool());
+    forceMaxPageSpin_->setValue(settings.value("scraper/forceMaxPage", 500).toInt());
 }
 
 void MainWindow::saveSettings() {
@@ -106,6 +117,10 @@ void MainWindow::saveSettings() {
     settings.setValue("log/showScraper", logScraperCheck_->isChecked());
     settings.setValue("log/showDownload", logDownloadCheck_->isChecked());
     settings.setValue("log/showDebug", logDebugCheck_->isChecked());
+
+    // Save force parallel settings
+    settings.setValue("scraper/forceParallel", forceParallelCheck_->isChecked());
+    settings.setValue("scraper/forceMaxPage", forceMaxPageSpin_->value());
 
     settings.sync();
 }
@@ -265,6 +280,16 @@ void MainWindow::setupUi() {
     scraperTabCountSpin_->setValue(1);  // Default 1 tab
     scraperTabCountSpin_->setToolTip("Number of concurrent browser tabs for scraping (1-10)");
     threadLayout->addWidget(scraperTabCountSpin_);
+
+    threadLayout->addSpacing(20);
+    forceParallelCheck_ = new QCheckBox("Force Parallel Max:");
+    forceParallelCheck_->setToolTip("If page count detection fails, use the specified max page for parallel scraping");
+    threadLayout->addWidget(forceParallelCheck_);
+
+    forceMaxPageSpin_ = new QSpinBox();
+    forceMaxPageSpin_->setRange(1, 1000000);
+    forceMaxPageSpin_->setValue(500);
+    threadLayout->addWidget(forceMaxPageSpin_);
 
     threadLayout->addStretch();
     downloaderLayout->addLayout(threadLayout);
@@ -1207,6 +1232,30 @@ void MainWindow::onBrowserPageReady(const QString& url, const QString& html) {
             logNormal(LogChannel::SCRAPER, QString("Starting parallel scraping with %1 tab(s)").arg(tabCount));
             scraperPool_->startScraping(QString::fromStdString(config.base_url), maxFound);
         } else {
+            // Couldn't detect max page - check for force override first
+            if (forceParallelCheck_->isChecked()) {
+                int forcedMax = forceMaxPageSpin_->value();
+                detectedLastPage_ = forcedMax;
+                logNormal(LogChannel::SCRAPER, QString("Page detection failed, but Force Parallel is enabled. Using max page: %1").arg(forcedMax));
+
+                updateProgressBar(scraperProgress_, 0);
+                updateLabel(scraperLabel_, QString("0 / %1 pages (Forced)").arg(forcedMax + 1));
+
+                // Start multi-tab scraping using the scraper pool
+                auto config = get_data_set_config(selectedDataSet_);
+                int tabCount = scraperTabCountSpin_->value();
+                scraperPool_->setPoolSize(tabCount);
+
+#ifdef HAVE_WEBENGINE
+                // Share browser profile with scraper pool for cookie sharing
+                scraperPool_->setCookieProfile(browserWidget_->profile());
+#endif
+
+                logNormal(LogChannel::SCRAPER, QString("Starting forced parallel scraping with %1 tab(s)").arg(tabCount));
+                scraperPool_->startScraping(QString::fromStdString(config.base_url), forcedMax);
+                return;
+            }
+
             // Couldn't detect max page - could be anti-bot or other issue
             if (isBlocked) {
                 // Anti-bot triggered on page 99999 - verify with page 0 before alerting user

@@ -1,3 +1,10 @@
+/*
+ * include/efgrabber/gui/main_window.h - GTK main window class
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #pragma once
 
 #include <gtk/gtk.h>

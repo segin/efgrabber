@@ -1,3 +1,10 @@
+/*
+ * src/gui/scraper_pool.h - Manages a pool of browser views for parallel scraping
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #ifndef EFGRABBER_SCRAPER_POOL_H
 #define EFGRABBER_SCRAPER_POOL_H
 

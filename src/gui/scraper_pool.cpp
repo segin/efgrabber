@@ -1,3 +1,10 @@
+/*
+ * src/gui/scraper_pool.cpp - Implementation of the scraper pool
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include "scraper_pool.h"
 #include <QTimer>
 #include <QUrl>

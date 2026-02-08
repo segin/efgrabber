@@ -1,3 +1,10 @@
+/*
+ * src/gui/browser_widget.cpp - Implementation of the browser widget
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include "browser_widget.h"
 #include <QRegularExpression>
 

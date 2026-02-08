@@ -1,3 +1,10 @@
+/*
+ * include/efgrabber/gui/progress_view.h - GTK progress view widget
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #pragma once
 
 #include <gtk/gtk.h>

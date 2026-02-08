@@ -1,3 +1,10 @@
+/*
+ * src/gui/main_window.cpp - Implementation of the GTK main window
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include "efgrabber/gui/main_window.h"
 #include <sstream>
 #include <iomanip>

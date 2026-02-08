@@ -1,3 +1,10 @@
+/*
+ * src/gui/main_window_qt.h - Main window class for the Qt GUI application
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #ifndef EFGRABBER_MAIN_WINDOW_QT_H
 #define EFGRABBER_MAIN_WINDOW_QT_H
 
@@ -144,6 +151,11 @@ private:
     // Download thread count control
     QSpinBox* threadCountSpin_;
     QSpinBox* scraperTabCountSpin_;
+
+    // Force parallel scraping
+    QCheckBox* forceParallelCheck_;
+    QSpinBox* forceMaxPageSpin_;
+
     QLabel* activeDownloadsLabel_;
 
     // Download options

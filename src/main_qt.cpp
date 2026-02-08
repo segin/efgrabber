@@ -1,3 +1,10 @@
+/*
+ * src/main_qt.cpp - Main entry point for the Qt application
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include <QApplication>
 #include "gui/main_window_qt.h"
 

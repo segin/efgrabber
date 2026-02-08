@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include "efgrabber/database.h"
 #include <sqlite3.h>
 #include <stdexcept>

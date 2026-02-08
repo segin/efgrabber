@@ -1,3 +1,10 @@
+/*
+ * src/gui/progress_view.cpp - Implementation of the GTK progress view
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #include "efgrabber/gui/progress_view.h"
 #include <sstream>
 #include <iomanip>

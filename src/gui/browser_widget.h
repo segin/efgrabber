@@ -1,3 +1,10 @@
+/*
+ * src/gui/browser_widget.h - Widget embedding QWebEngineView for browser scraping
+ * Copyright (c) 2026 Kirn Gill II
+ * SPDX-License-Identifier: MIT
+ * See LICENSE file for full license text.
+ */
+
 #ifndef EFGRABBER_BROWSER_WIDGET_H
 #define EFGRABBER_BROWSER_WIDGET_H
 
