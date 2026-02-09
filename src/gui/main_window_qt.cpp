@@ -361,6 +361,16 @@ void MainWindow::setupUi() {
     scraperLayout->addWidget(scraperProgress_);
     scraperLabel_ = new QLabel("0 / 0 pages scraped");
     scraperLayout->addWidget(scraperLabel_);
+
+    QHBoxLayout* scraperControls = new QHBoxLayout();
+    scraperControls->addStretch();
+    scraperPauseButton_ = new QPushButton("Pause Scraping");
+    scraperPauseButton_->setEnabled(false);
+    scraperPauseButton_->setToolTip("Pause/Resume only the scraper (downloads continue)");
+    connect(scraperPauseButton_, &QPushButton::clicked, this, &MainWindow::onScraperPauseClicked);
+    scraperControls->addWidget(scraperPauseButton_);
+    scraperLayout->addLayout(scraperControls);
+
     downloaderLayout->addWidget(scraperGroup_);
 
     // Brute force progress
@@ -893,6 +903,8 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     if (mode == OperationMode::SCRAPER || mode == OperationMode::HYBRID) {
         logNormal(LogChannel::SYSTEM, "Using browser-based scraping to bypass Akamai");
         startBrowserScraping(dataSet);
+        scraperPauseButton_->setEnabled(true);
+        scraperPauseButton_->setText("Pause Scraping");
     }
 
     if (mode == OperationMode::BRUTE_FORCE || mode == OperationMode::HYBRID) {
@@ -1002,6 +1014,8 @@ void MainWindow::stopDownload() {
     dataSetCombo_->setEnabled(true);
     modeCombo_->setEnabled(true);
     activeDownloadsLabel_->setText("");
+    scraperPauseButton_->setEnabled(false);
+    scraperPauseButton_->setText("Pause Scraping");
 
     logNormal(LogChannel::SYSTEM, "Download stopped");
 }
@@ -1011,16 +1025,36 @@ void MainWindow::pauseDownload() {
 
     if (isPaused_.load()) {
         if (downloadManager_) downloadManager_->resume();
-        if (scraperPool_) scraperPool_->resume();
+        if (scraperPool_) {
+            scraperPool_->resume();
+            scraperPauseButton_->setText("Pause Scraping");
+        }
         isPaused_.store(false);
         pauseButton_->setText("Pause");
         logNormal(LogChannel::SYSTEM, "Download resumed");
     } else {
         if (downloadManager_) downloadManager_->pause();
-        if (scraperPool_) scraperPool_->pause();
+        if (scraperPool_) {
+            scraperPool_->pause();
+            scraperPauseButton_->setText("Resume Scraping");
+        }
         isPaused_.store(true);
         pauseButton_->setText("Resume");
         logNormal(LogChannel::SYSTEM, "Download paused");
+    }
+}
+
+void MainWindow::onScraperPauseClicked() {
+    if (!scraperPool_ || !browserScrapingActive_.load()) return;
+
+    if (scraperPool_->isPaused()) {
+        scraperPool_->resume();
+        scraperPauseButton_->setText("Pause Scraping");
+        logNormal(LogChannel::SCRAPER, "Scraper resumed");
+    } else {
+        scraperPool_->pause();
+        scraperPauseButton_->setText("Resume Scraping");
+        logNormal(LogChannel::SCRAPER, "Scraper paused");
     }
 }
 

@@ -55,6 +55,9 @@ public:
     // Check if scraping is active
     bool isActive() const { return active_; }
 
+    // Check if scraping is paused
+    bool isPaused() const { return paused_; }
+
     // Get progress
     int pagesScraped() const;
     int totalPages() const { return maxPage_ + 1; }

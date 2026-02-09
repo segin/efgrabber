@@ -78,6 +78,7 @@ public slots:
     void onModeChanged(int index);
     void onStatsTimer();
     void onThreadCountChanged(int value);
+    void onScraperPauseClicked();
 
 signals:
     void logMessageReceived(const QString& message);
@@ -178,6 +179,7 @@ private:
     QGroupBox* scraperGroup_;
     QProgressBar* scraperProgress_;
     QLabel* scraperLabel_;
+    QPushButton* scraperPauseButton_;
 
     QGroupBox* bruteForceGroup_;
     QProgressBar* bruteForceProgress_;
