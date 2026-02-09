@@ -20,9 +20,10 @@ This is often easier if you are used to Linux environments.
               mingw-w64-ucrt-x86_64-make \
               mingw-w64-ucrt-x86_64-curl \
               mingw-w64-ucrt-x86_64-sqlite3 \
-              mingw-w64-ucrt-x86_64-qt5-base \
-              mingw-w64-ucrt-x86_64-qt5-webengine
+              mingw-w64-ucrt-x86_64-qt5-base
     ```
+    *Note: `qt5-webengine` is generally NOT available for MinGW. The application will build without the embedded browser feature.*
+
 5.  **Build**:
     ```bash
     git clone https://github.com/segin/efgrabber.git
