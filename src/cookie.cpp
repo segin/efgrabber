@@ -132,6 +132,30 @@ void CookieJar::add_from_header(const std::string& header_line, const std::strin
     }
 }
 
+void CookieJar::add_from_cookie_string(const std::string& cookie_string, const std::string& domain) {
+    std::stringstream ss(cookie_string);
+    std::string segment;
+    time_t expiry = std::time(nullptr) + 86400 * 30; // Assume valid for 30 days if manually provided
+
+    while (std::getline(ss, segment, ';')) {
+        size_t start = segment.find_first_not_of(" \t");
+        size_t end = segment.find_last_not_of(" \t");
+        if (start == std::string::npos) continue;
+        segment = segment.substr(start, end - start + 1);
+
+        size_t eq_pos = segment.find('=');
+        if (eq_pos != std::string::npos) {
+            std::string key = segment.substr(0, eq_pos);
+            std::string value = segment.substr(eq_pos + 1);
+
+            // Basic heuristic: if domain is secure (justice.gov), mark cookie as secure
+            bool secure = (domain.find("justice.gov") != std::string::npos);
+
+            add_cookie(Cookie(key, value, domain, secure, expiry));
+        }
+    }
+}
+
 std::string CookieJar::get_cookies_for_url(const std::string& url) {
     std::string req_domain = extract_domain(url);
     bool secure = is_url_secure(url);

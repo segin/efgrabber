@@ -57,6 +57,9 @@ public:
     // Add from raw header string (Set-Cookie: ...)
     void add_from_header(const std::string& header_line, const std::string& default_domain);
 
+    // Add from standard cookie string (key=value; key2=value2)
+    void add_from_cookie_string(const std::string& cookie_string, const std::string& domain);
+
     // Get cookies string for a specific request
     std::string get_cookies_for_url(const std::string& url);
 

@@ -262,15 +262,9 @@ void DownloadManager::set_cookie_file(const std::string& cookie_file) {
 
 void DownloadManager::set_cookie_string(const std::string& cookies) {
     cookie_string_ = cookies;
-    // Also parse into jar for better management if it contains valid cookie string
-    if (cookie_jar_) {
-        // This is a rough approximation - browser usually gives "key=value; key2=value2"
-        // We'd need to know the domain to add them properly.
-        // For now, we'll rely on the existing behavior for the initial string
-        // and just use the jar for new Set-Cookie headers.
-
-        // Actually, let's just stick to the manual override string if present,
-        // but if we wanted to be smarter we could parse it.
+    // Also parse into jar for better management
+    if (cookie_jar_ && !cookies.empty()) {
+        cookie_jar_->add_from_cookie_string(cookies, TARGET_DOMAIN);
     }
 }
 
@@ -405,17 +399,22 @@ void DownloadManager::scraper_worker() {
         std::string url = scraper_->build_page_url(mid);
 
         Downloader probe_downloader;
-        if (!cookie_string_.empty()) {
-            probe_downloader.set_cookie(cookie_string_);
-        } else if (cookie_jar_) {
+        // Prefer cookies from jar
+        if (cookie_jar_) {
             std::string cookies = cookie_jar_->get_cookies_for_url(url);
             if (!cookies.empty()) {
                  probe_downloader.set_cookie(cookies);
+            } else if (!cookie_string_.empty()) {
+                 probe_downloader.set_cookie(cookie_string_);
             } else if (!cookie_file_.empty()) {
                  probe_downloader.set_cookie_file(cookie_file_);
             }
-        } else if (!cookie_file_.empty()) {
-            probe_downloader.set_cookie_file(cookie_file_);
+        } else {
+            if (!cookie_string_.empty()) {
+                probe_downloader.set_cookie(cookie_string_);
+            } else if (!cookie_file_.empty()) {
+                probe_downloader.set_cookie_file(cookie_file_);
+            }
         }
 
         auto result = probe_downloader.download_page(url);
@@ -694,17 +693,23 @@ void DownloadManager::scrape_page(int page_number) {
     Downloader downloader;
     std::string url = scraper_->build_page_url(page_number);
 
-    if (!cookie_string_.empty()) {
-        downloader.set_cookie(cookie_string_);
-    } else if (cookie_jar_) {
+    // Prefer cookies from jar (which includes initial string + updates),
+    // fallback to static string only if jar is empty/failed
+    if (cookie_jar_) {
         std::string cookies = cookie_jar_->get_cookies_for_url(url);
         if (!cookies.empty()) {
              downloader.set_cookie(cookies);
+        } else if (!cookie_string_.empty()) {
+             downloader.set_cookie(cookie_string_);
         } else if (!cookie_file_.empty()) {
              downloader.set_cookie_file(cookie_file_);
         }
-    } else if (!cookie_file_.empty()) {
-        downloader.set_cookie_file(cookie_file_);
+    } else {
+        if (!cookie_string_.empty()) {
+            downloader.set_cookie(cookie_string_);
+        } else if (!cookie_file_.empty()) {
+            downloader.set_cookie_file(cookie_file_);
+        }
     }
 
     auto result = downloader.download_page(url);
@@ -776,17 +781,22 @@ void DownloadManager::download_file(const FileRecord& file) {
         }
 
         Downloader downloader;
-        if (!cookie_string_.empty()) {
-            downloader.set_cookie(cookie_string_);
-        } else if (cookie_jar_) {
+        // Prefer cookies from jar
+        if (cookie_jar_) {
             std::string cookies = cookie_jar_->get_cookies_for_url(file.url);
             if (!cookies.empty()) {
                  downloader.set_cookie(cookies);
+            } else if (!cookie_string_.empty()) {
+                 downloader.set_cookie(cookie_string_);
             } else if (!cookie_file_.empty()) {
                  downloader.set_cookie_file(cookie_file_);
             }
-        } else if (!cookie_file_.empty()) {
-            downloader.set_cookie_file(cookie_file_);
+        } else {
+            if (!cookie_string_.empty()) {
+                downloader.set_cookie(cookie_string_);
+            } else if (!cookie_file_.empty()) {
+                downloader.set_cookie_file(cookie_file_);
+            }
         }
 
         auto result = downloader.download_to_file(file.url, file.local_path);
