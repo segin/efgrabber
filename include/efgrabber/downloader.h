@@ -27,6 +27,7 @@ struct DownloadResult {
     int64_t content_length;      // Actual bytes downloaded
     int64_t expected_length;     // Content-Length header from server (0 if not provided)
     std::string content_type;
+    std::vector<std::string> set_cookie_headers; // Captured Set-Cookie headers
     int64_t download_time_ms;    // Actual transfer time in milliseconds (wire time)
 };
 

@@ -78,6 +78,11 @@ bool DownloadManager::initialize() {
             return false;
         }
 
+        // Initialize cookie jar
+        cookie_jar_ = std::make_unique<CookieJar>();
+        // Start reaper thread (every 60 seconds)
+        cookie_jar_->start_reaper(60);
+
         log("Download manager initialized");
         return true;
     } catch (const std::exception& e) {
@@ -257,6 +262,16 @@ void DownloadManager::set_cookie_file(const std::string& cookie_file) {
 
 void DownloadManager::set_cookie_string(const std::string& cookies) {
     cookie_string_ = cookies;
+    // Also parse into jar for better management if it contains valid cookie string
+    if (cookie_jar_) {
+        // This is a rough approximation - browser usually gives "key=value; key2=value2"
+        // We'd need to know the domain to add them properly.
+        // For now, we'll rely on the existing behavior for the initial string
+        // and just use the jar for new Set-Cookie headers.
+
+        // Actually, let's just stick to the manual override string if present,
+        // but if we wanted to be smarter we could parse it.
+    }
 }
 
 void DownloadManager::set_overwrite_existing(bool overwrite) {
@@ -377,18 +392,39 @@ void DownloadManager::scraper_worker() {
     int low = 0;
     int high = 100000;  // Start with a high upper bound
 
-    Downloader probe_downloader;
-    if (!cookie_string_.empty()) {
-        probe_downloader.set_cookie(cookie_string_);
-    } else if (!cookie_file_.empty()) {
-        probe_downloader.set_cookie_file(cookie_file_);
-    }
+    // Removed single probe_downloader instance to allow fresh cookies per request if needed
+    // Downloader probe_downloader;
+    // if (!cookie_string_.empty()) {
+    //     probe_downloader.set_cookie(cookie_string_);
+    // } else if (!cookie_file_.empty()) {
+    //     probe_downloader.set_cookie_file(cookie_file_);
+    // }
 
     while (low <= high && !stop_requested_) {
         int mid = low + (high - low) / 2;
         std::string url = scraper_->build_page_url(mid);
 
+        Downloader probe_downloader;
+        if (!cookie_string_.empty()) {
+            probe_downloader.set_cookie(cookie_string_);
+        } else if (cookie_jar_) {
+            std::string cookies = cookie_jar_->get_cookies_for_url(url);
+            if (!cookies.empty()) {
+                 probe_downloader.set_cookie(cookies);
+            } else if (!cookie_file_.empty()) {
+                 probe_downloader.set_cookie_file(cookie_file_);
+            }
+        } else if (!cookie_file_.empty()) {
+            probe_downloader.set_cookie_file(cookie_file_);
+        }
+
         auto result = probe_downloader.download_page(url);
+
+        if (cookie_jar_ && !result.set_cookie_headers.empty()) {
+            for (const auto& header : result.set_cookie_headers) {
+                 cookie_jar_->add_from_header(header, TARGET_DOMAIN);
+            }
+        }
 
         if (result.http_code == 200 && !result.data.empty()) {
             // Check if it's a valid page with content
@@ -656,14 +692,29 @@ void DownloadManager::stats_worker() {
 
 void DownloadManager::scrape_page(int page_number) {
     Downloader downloader;
+    std::string url = scraper_->build_page_url(page_number);
+
     if (!cookie_string_.empty()) {
         downloader.set_cookie(cookie_string_);
+    } else if (cookie_jar_) {
+        std::string cookies = cookie_jar_->get_cookies_for_url(url);
+        if (!cookies.empty()) {
+             downloader.set_cookie(cookies);
+        } else if (!cookie_file_.empty()) {
+             downloader.set_cookie_file(cookie_file_);
+        }
     } else if (!cookie_file_.empty()) {
         downloader.set_cookie_file(cookie_file_);
     }
-    std::string url = scraper_->build_page_url(page_number);
 
     auto result = downloader.download_page(url);
+
+    if (cookie_jar_ && !result.set_cookie_headers.empty()) {
+        for (const auto& header : result.set_cookie_headers) {
+             // Default domain is target domain from config if not specified
+             cookie_jar_->add_from_header(header, TARGET_DOMAIN);
+        }
+    }
 
     if (!result.success) {
         log("Failed to scrape page " + std::to_string(page_number) + ": " + result.error_message);
@@ -727,10 +778,24 @@ void DownloadManager::download_file(const FileRecord& file) {
         Downloader downloader;
         if (!cookie_string_.empty()) {
             downloader.set_cookie(cookie_string_);
+        } else if (cookie_jar_) {
+            std::string cookies = cookie_jar_->get_cookies_for_url(file.url);
+            if (!cookies.empty()) {
+                 downloader.set_cookie(cookies);
+            } else if (!cookie_file_.empty()) {
+                 downloader.set_cookie_file(cookie_file_);
+            }
         } else if (!cookie_file_.empty()) {
             downloader.set_cookie_file(cookie_file_);
         }
+
         auto result = downloader.download_to_file(file.url, file.local_path);
+
+        if (cookie_jar_ && !result.set_cookie_headers.empty()) {
+            for (const auto& header : result.set_cookie_headers) {
+                 cookie_jar_->add_from_header(header, TARGET_DOMAIN);
+            }
+        }
 
         // Track when this download ends
         auto download_end = std::chrono::steady_clock::now();

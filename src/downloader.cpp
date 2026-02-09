@@ -84,6 +84,7 @@ static int progress_callback(void* clientp, curl_off_t /*dltotal*/, curl_off_t /
 struct HeaderData {
     int64_t content_length = -1;
     std::string content_type;
+    std::vector<std::string> set_cookies;
 };
 
 static size_t header_callback(char* buffer, size_t size, size_t nitems, void* userdata) {
@@ -116,6 +117,15 @@ static size_t header_callback(char* buffer, size_t size, size_t nitems, void* us
             if (start != std::string::npos && end != std::string::npos) {
                 header_data->content_type = value.substr(start, end - start + 1);
             }
+        }
+    }
+
+    // Capture Set-Cookie headers
+    if (header.find("Set-Cookie:") == 0 || header.find("set-cookie:") == 0) {
+        // Strip CRLF
+        size_t end = header.find_last_not_of("\r\n");
+        if (end != std::string::npos) {
+            header_data->set_cookies.push_back(header.substr(0, end + 1));
         }
     }
 
@@ -235,6 +245,7 @@ DownloadResult Downloader::download(const std::string& url, int timeout_seconds)
     result.http_code = static_cast<int>(http_code);
     result.content_length = header_data.content_length;
     result.content_type = header_data.content_type;
+    result.set_cookie_headers = std::move(header_data.set_cookies);
 
     if (res != CURLE_OK) {
         result.error_message = curl_easy_strerror(res);
@@ -306,6 +317,7 @@ DownloadResult Downloader::download_to_file(const std::string& url, const std::s
     result.content_length = write_data.downloaded;
     result.expected_length = header_data.content_length;  // From response headers
     result.content_type = header_data.content_type;
+    result.set_cookie_headers = std::move(header_data.set_cookies);
 
     if (res != CURLE_OK) {
         result.error_message = curl_easy_strerror(res);

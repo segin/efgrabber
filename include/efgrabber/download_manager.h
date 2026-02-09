@@ -17,6 +17,7 @@
 #include "efgrabber/downloader.h"
 #include "efgrabber/scraper.h"
 #include "efgrabber/thread_pool.h"
+#include "efgrabber/cookie.h"
 
 namespace efgrabber {
 
@@ -125,6 +126,7 @@ private:
     std::unique_ptr<ThreadPool> download_pool_;
     std::unique_ptr<ThreadPool> scrape_pool_;
     std::unique_ptr<Scraper> scraper_;
+    std::unique_ptr<CookieJar> cookie_jar_;
 
     // Configuration
     std::string db_path_;

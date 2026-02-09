@@ -64,6 +64,7 @@ set(CORE_SOURCES
     src/scraper.cpp
     src/thread_pool.cpp
     src/download_manager.cpp
+    src/cookie.cpp
 )
 
 # CLI-only version (no GUI dependencies) - always build
