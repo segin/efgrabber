@@ -17,6 +17,7 @@
 #include <QString>
 #include <QMap>
 #include <functional>
+#include "efgrabber/common.h"
 
 #ifdef HAVE_WEBENGINE
 #include <QWebEngineView>
@@ -41,7 +42,7 @@ public:
     QString currentUrl() const;
 
     // Get all cookies as a curl-compatible string (name=value; name2=value2)
-    QString getCookieString(const QString& domain = ".justice.gov") const;
+    QString getCookieString(const QString& domain = QString::fromStdString(TARGET_DOMAIN)) const;
 
     // Get cookies in Netscape format for writing to file
     QString getCookiesNetscapeFormat() const;

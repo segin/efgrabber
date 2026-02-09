@@ -195,6 +195,7 @@ constexpr int DOWNLOAD_TIMEOUT_SECONDS = 300;  // 5 minutes
 constexpr int PAGE_TIMEOUT_SECONDS = 60;       // 1 minute
 constexpr const char* REQUIRED_COOKIE = "justiceGovAgeVerified=true";
 constexpr const char* USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0";
+constexpr const char* TARGET_DOMAIN = "justice.gov";
 
 // Helper to convert DownloadStatus to string
 inline const char* status_to_string(DownloadStatus status) {

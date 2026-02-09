@@ -33,7 +33,7 @@ void BrowserWidget::setupUi() {
 
     urlEdit_ = new QLineEdit();
     urlEdit_->setPlaceholderText("Enter URL...");
-    urlEdit_->setText("https://www.justice.gov/epstein/doj-disclosures");
+    urlEdit_->setText("https://www." + QString::fromStdString(TARGET_DOMAIN) + "/epstein/doj-disclosures");
     navLayout_->addWidget(urlEdit_);
 
     goButton_ = new QPushButton("Go");
@@ -60,7 +60,7 @@ void BrowserWidget::setupUi() {
             this, &BrowserWidget::onCookieRemoved);
 
     // Initial navigation
-    webView_->setUrl(QUrl("https://www.justice.gov/epstein/doj-disclosures"));
+    webView_->setUrl(QUrl("https://www." + QString::fromStdString(TARGET_DOMAIN) + "/epstein/doj-disclosures"));
 #else
     placeholderLabel_ = new QLabel("WebEngine not available.\n\n"
                                    "To use the browser, rebuild with Qt5 WebEngine:\n"
@@ -76,7 +76,7 @@ void BrowserWidget::setupUi() {
     goButton_->setEnabled(false);
 #endif
 
-    statusLabel_ = new QLabel("Browse to justice.gov - cookies will transfer automatically");
+    statusLabel_ = new QLabel(QString("Browse to %1 - cookies will transfer automatically").arg(QString::fromStdString(TARGET_DOMAIN)));
     mainLayout_->addWidget(statusLabel_);
 }
 
@@ -201,14 +201,15 @@ void BrowserWidget::onLoadFinished(bool ok) {
     if (ok) {
 #ifdef HAVE_WEBENGINE
         int cookieCount = cookies_.size();
-        int justiceCookies = 0;
+        int targetCookies = 0;
+        QString targetDomain = QString::fromStdString(TARGET_DOMAIN);
         for (const auto& cookie : cookies_) {
-            if (cookie.domain().contains("justice.gov")) {
-                justiceCookies++;
+            if (cookie.domain().contains(targetDomain)) {
+                targetCookies++;
             }
         }
-        statusLabel_->setText(QString("Page loaded - %1 cookies (%2 for justice.gov)")
-            .arg(cookieCount).arg(justiceCookies));
+        statusLabel_->setText(QString("Page loaded - %1 cookies (%2 for %3)")
+            .arg(cookieCount).arg(targetCookies).arg(targetDomain));
 
         // Get page HTML and emit for scraping + scan for PDF links
         webView_->page()->toHtml([this](const QString& html) {

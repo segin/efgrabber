@@ -504,7 +504,7 @@ void MainWindow::setupUi() {
 
     // Connect browser signals
     connect(browserWidget_, &BrowserWidget::cookiesChanged, this, [this]() {
-        if (browserWidget_->hasCookiesFor("justice.gov")) {
+        if (browserWidget_->hasCookiesFor(QString::fromStdString(TARGET_DOMAIN))) {
             statusBar()->showMessage("Cookies updated from browser", 3000);
         }
     });
@@ -518,7 +518,7 @@ void MainWindow::setupUi() {
     scrapeTimer_->setTimerType(Qt::CoarseTimer);
     connect(scrapeTimer_, &QTimer::timeout, this, &MainWindow::scrapeNextPage);
 
-    statusBar()->showMessage("Browse to justice.gov to get cookies, then start download");
+    statusBar()->showMessage(QString("Browse to %1 to get cookies, then start download").arg(QString::fromStdString(TARGET_DOMAIN)));
 }
 
 void MainWindow::onStartClicked() {
@@ -549,8 +549,8 @@ void MainWindow::onResumeClicked() {
     downloadManager_->set_overwrite_existing(overwriteExistingCheck_->isChecked());
 
     // Set cookies if available
-    if (browserWidget_->hasCookiesFor("justice.gov")) {
-        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+    if (browserWidget_->hasCookiesFor(QString::fromStdString(TARGET_DOMAIN))) {
+        QString browserCookies = browserWidget_->getCookieString(QString::fromStdString(TARGET_DOMAIN));
         if (!browserCookies.isEmpty()) {
             downloadManager_->set_cookie_string(browserCookies.toStdString());
             logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
@@ -611,8 +611,8 @@ void MainWindow::onRetryFailedClicked() {
     downloadManager_->set_max_concurrent_downloads(threadCountSpin_->value());
 
     // Set cookies if available
-    if (browserWidget_->hasCookiesFor("justice.gov")) {
-        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+    if (browserWidget_->hasCookiesFor(QString::fromStdString(TARGET_DOMAIN))) {
+        QString browserCookies = browserWidget_->getCookieString(QString::fromStdString(TARGET_DOMAIN));
         if (!browserCookies.isEmpty()) {
             downloadManager_->set_cookie_string(browserCookies.toStdString());
             logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
@@ -679,8 +679,8 @@ void MainWindow::onRedownloadAllClicked() {
     downloadManager_->set_overwrite_existing(overwriteExistingCheck_->isChecked());
 
     // Set cookies if available
-    if (browserWidget_->hasCookiesFor("justice.gov")) {
-        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+    if (browserWidget_->hasCookiesFor(QString::fromStdString(TARGET_DOMAIN))) {
+        QString browserCookies = browserWidget_->getCookieString(QString::fromStdString(TARGET_DOMAIN));
         if (!browserCookies.isEmpty()) {
             downloadManager_->set_cookie_string(browserCookies.toStdString());
             logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
@@ -832,8 +832,8 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     }
 
     // Use cookies from browser or file
-    if (browserWidget_->hasCookiesFor("justice.gov")) {
-        QString browserCookies = browserWidget_->getCookieString("justice.gov");
+    if (browserWidget_->hasCookiesFor(QString::fromStdString(TARGET_DOMAIN))) {
+        QString browserCookies = browserWidget_->getCookieString(QString::fromStdString(TARGET_DOMAIN));
         if (!browserCookies.isEmpty()) {
             downloadManager_->set_cookie_string(browserCookies.toStdString());
             logNormal(LogChannel::SYSTEM, "Using cookies from browser session");
