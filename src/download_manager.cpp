@@ -180,7 +180,7 @@ void DownloadManager::start_download_only(const DataSetConfig& config) {
     stats_thread_ = std::thread(&DownloadManager::stats_worker, this);
 
     // Start download worker - it will wait for files to be added to the queue
-    std::thread(&DownloadManager::download_worker, this).detach();
+    download_thread_ = std::thread(&DownloadManager::download_worker, this);
 }
 
 void DownloadManager::stop() {
@@ -417,7 +417,22 @@ void DownloadManager::scraper_worker() {
             }
         }
 
-        auto result = probe_downloader.download_page(url);
+        DownloadResult result;
+        int retries = 0;
+        const int max_retries = 3;
+
+        while (retries < max_retries) {
+            result = probe_downloader.download_page(url);
+
+            if (result.http_code == 200 || result.http_code == 404 || stop_requested_) {
+                break;
+            }
+
+            retries++;
+            if (retries < max_retries) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
 
         if (cookie_jar_ && !result.set_cookie_headers.empty()) {
             for (const auto& header : result.set_cookie_headers) {
