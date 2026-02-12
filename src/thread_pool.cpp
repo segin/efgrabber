@@ -1,8 +1,24 @@
 /*
- * src/thread_pool.cpp - Implementation of the thread pool
- * Copyright (c) 2026 Kirn Gill II
- * SPDX-License-Identifier: MIT
- * See LICENSE file for full license text.
+ * thread_pool.cpp - Implementation of the thread pool
+ * Copyright © 2026 Kirn Gill II <segin2005@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "efgrabber/thread_pool.h"
@@ -41,10 +57,19 @@ void ThreadPool::worker_thread() {
         active_tasks_++;
         try {
             task();
-        } catch (const std::exception& e) {
-            std::cerr << "[ThreadPool] Task exception: " << e.what() << std::endl;
         } catch (...) {
-            std::cerr << "[ThreadPool] Task unknown exception" << std::endl;
+            std::unique_lock<std::mutex> lock(error_handler_mutex_);
+            if (error_handler_) {
+                error_handler_(std::current_exception());
+            } else {
+                try {
+                    throw;
+                } catch (const std::exception& e) {
+                    std::cerr << "[ThreadPool] Task exception: " << e.what() << std::endl;
+                } catch (...) {
+                    std::cerr << "[ThreadPool] Task unknown exception" << std::endl;
+                }
+            }
         }
         active_tasks_--;
         completed_tasks_++;
@@ -92,6 +117,11 @@ void ThreadPool::shutdown() {
             worker.join();
         }
     }
+}
+
+void ThreadPool::set_error_handler(ErrorHandler handler) {
+    std::unique_lock<std::mutex> lock(error_handler_mutex_);
+    error_handler_ = handler;
 }
 
 } // namespace efgrabber

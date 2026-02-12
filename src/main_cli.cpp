@@ -1,8 +1,24 @@
 /*
- * src/main_cli.cpp - Main entry point for the CLI application
- * Copyright (c) 2026 Kirn Gill II
- * SPDX-License-Identifier: MIT
- * See LICENSE file for full license text.
+ * main_cli.cpp - Main entry point for the CLI application
+ * Copyright © 2026 Kirn Gill II <segin2005@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include <iostream>
@@ -89,46 +105,51 @@ int main(int argc, char** argv) {
 
     int opt;
     while ((opt = getopt_long(argc, argv, "d:m:o:k:c:r:s:e:h", long_options, nullptr)) != -1) {
-        switch (opt) {
-            case 'd':
-                data_set = std::stoi(optarg);
-                if (data_set < MIN_DATA_SET || data_set > MAX_DATA_SET) {
-                    std::cerr << "Error: Data set must be between " << MIN_DATA_SET
-                              << " and " << MAX_DATA_SET << "\n";
+        try {
+            switch (opt) {
+                case 'd':
+                    data_set = std::stoi(optarg);
+                    if (data_set < MIN_DATA_SET || data_set > MAX_DATA_SET) {
+                        std::cerr << "Error: Data set must be between " << MIN_DATA_SET
+                                  << " and " << MAX_DATA_SET << "\n";
+                        return 1;
+                    }
+                    break;
+                case 'm':
+                    mode_str = optarg;
+                    break;
+                case 'o':
+                    output_dir = optarg;
+                    break;
+                case 'k':
+                    cookie_file = optarg;
+                    break;
+                case 'c':
+                    max_concurrent = std::stoi(optarg);
+                    if (max_concurrent < 1 || max_concurrent > 10000) {
+                        std::cerr << "Error: Concurrent downloads must be between 1 and 10000\n";
+                        return 1;
+                    }
+                    break;
+                case 'r':
+                    max_retries = std::stoi(optarg);
+                    break;
+                case 's':
+                    brute_start = std::stoull(optarg);
+                    break;
+                case 'e':
+                    brute_end = std::stoull(optarg);
+                    break;
+                case 'h':
+                    print_usage(argv[0]);
+                    return 0;
+                default:
+                    print_usage(argv[0]);
                     return 1;
-                }
-                break;
-            case 'm':
-                mode_str = optarg;
-                break;
-            case 'o':
-                output_dir = optarg;
-                break;
-            case 'k':
-                cookie_file = optarg;
-                break;
-            case 'c':
-                max_concurrent = std::stoi(optarg);
-                if (max_concurrent < 1 || max_concurrent > 10000) {
-                    std::cerr << "Error: Concurrent downloads must be between 1 and 10000\n";
-                    return 1;
-                }
-                break;
-            case 'r':
-                max_retries = std::stoi(optarg);
-                break;
-            case 's':
-                brute_start = std::stoull(optarg);
-                break;
-            case 'e':
-                brute_end = std::stoull(optarg);
-                break;
-            case 'h':
-                print_usage(argv[0]);
-                return 0;
-            default:
-                print_usage(argv[0]);
-                return 1;
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "Error parsing argument for option '-" << (char)opt << "': " << e.what() << "\n";
+            return 1;
         }
     }
 

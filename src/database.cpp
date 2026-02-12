@@ -1,7 +1,24 @@
 /*
- * Copyright (c) 2026 Kirn Gill II
- * SPDX-License-Identifier: MIT
- * See LICENSE file for full license text.
+ * database.cpp - Implementation of the SQLite database interface
+ * Copyright © 2026 Kirn Gill II <segin2005@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "efgrabber/database.h"
@@ -17,10 +34,10 @@ namespace efgrabber {
 Database::Database(const std::string& db_path) : db_path_(db_path) {
     int rc = sqlite3_open(db_path.c_str(), &db_);
     if (rc != SQLITE_OK) {
-        std::string error = sqlite3_errmsg(db_);
+        std::string error_msg_str = sqlite3_errmsg(db_);
         sqlite3_close(db_);
         db_ = nullptr;
-        throw std::runtime_error("Failed to open database: " + error);
+        throw std::runtime_error("Failed to open database: " + error_msg_str);
     }
 
     // Enable WAL mode for better concurrent access
@@ -36,7 +53,7 @@ Database::~Database() {
 
 Database::Database(Database&& other) noexcept
     : db_(other.db_), db_path_(std::move(other.db_path_)),
-      last_error_(std::move(other.last_error_)) {
+      last_error_(std::move(other.last_error_)), last_error_info_(std::move(other.last_error_info_)) {
     other.db_ = nullptr;
 }
 
@@ -46,6 +63,7 @@ Database& Database::operator=(Database&& other) noexcept {
         db_ = other.db_;
         db_path_ = std::move(other.db_path_);
         last_error_ = std::move(other.last_error_);
+        last_error_info_ = std::move(other.last_error_info_);
         other.db_ = nullptr;
     }
     return *this;
@@ -63,9 +81,11 @@ bool Database::execute(const std::string& sql) {
     int rc = sqlite3_exec(db_, sql.c_str(), nullptr, nullptr, &error_msg);
     if (rc != SQLITE_OK) {
         last_error_ = error_msg ? error_msg : "Unknown error";
+        last_error_info_ = ErrorInfo{ErrorCode::DB_OPERATION_FAILED, last_error_};
         sqlite3_free(error_msg);
         return false;
     }
+    last_error_info_.reset(); // Clear previous error
     return true;
 }
 
@@ -128,6 +148,7 @@ bool Database::add_file(const FileRecord& record) {
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     if (rc != SQLITE_OK) {
         last_error_ = sqlite3_errmsg(db_);
+        last_error_info_ = ErrorInfo{ErrorCode::DB_OPERATION_FAILED, last_error_};
         return false;
     }
 

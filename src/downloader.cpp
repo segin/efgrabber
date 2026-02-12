@@ -1,7 +1,24 @@
 /*
- * Copyright (c) 2026 Kirn Gill II
- * SPDX-License-Identifier: MIT
- * See LICENSE file for full license text.
+ * downloader.cpp - Implementation of the libcurl-based HTTP downloader
+ * Copyright © 2026 Kirn Gill II <segin2005@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "efgrabber/downloader.h"
@@ -51,6 +68,12 @@ struct FileWriteData {
     int64_t total;
 };
 
+// Internal struct to pass to progress callback
+struct ProgressData {
+    Downloader* downloader;
+    FileWriteData* file_data; // Pointer to file data to update total
+};
+
 static size_t file_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t real_size = size * nmemb;
     auto* data = static_cast<FileWriteData*>(userp);
@@ -66,18 +89,42 @@ static size_t file_write_callback(void* contents, size_t size, size_t nmemb, voi
 
     data->downloaded += real_size;
 
-    if (data->progress_cb) {
-        data->progress_cb(data->downloaded, data->total);
-    }
+    // We delegate progress updates to the progress_callback which has access to dltotal
+    // But we still need to check if progress_cb is valid here if we wanted to use it,
+    // but without total size it's less useful.
 
     return real_size;
 }
 
-// Progress callback for cancellation
-static int progress_callback(void* clientp, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
+// Progress callback for cancellation and updates
+static int progress_callback(void* clientp, curl_off_t dltotal, curl_off_t dlnow,
                              curl_off_t /*ultotal*/, curl_off_t /*ulnow*/) {
-    auto* downloader = static_cast<Downloader*>(clientp);
-    return downloader->is_cancelled() ? 1 : 0;  // Return non-zero to abort
+    // If we passed ProgressData*, use it. If we passed Downloader*, use it just for cancel.
+    // The safest way is to ensure we always wrap context if we want progress.
+    // However, download() sets clientp to 'this' (Downloader*), while download_to_file()
+    // sets it to ProgressData*.
+    // We cannot easily differentiate void* types at runtime.
+    //
+    // Solution: We will rely on the fact that if we set CURLOPT_XFERINFODATA, we know what we set.
+    // But this is a static callback function.
+    //
+    // We will assume that if we are in this callback, we are receiving what we set.
+    // BUT we need to know what to cast it to.
+    //
+    // To solve this properly, we will ALWAYS pass ProgressData structure to XFERINFODATA, even if file_data is null.
+
+    auto* progress_data = static_cast<ProgressData*>(clientp);
+    if (progress_data->downloader->is_cancelled()) return 1;
+
+    if (progress_data->file_data && progress_data->file_data->progress_cb) {
+        // Update total if known
+        if (dltotal > 0) {
+            progress_data->file_data->total = dltotal;
+        }
+        progress_data->file_data->progress_cb(dlnow, dltotal);
+    }
+
+    return 0;
 }
 
 // Header callback to extract content info
@@ -102,7 +149,11 @@ static size_t header_callback(char* buffer, size_t size, size_t nitems, void* us
             size_t start = value.find_first_not_of(" \t\r\n");
             size_t end = value.find_last_not_of(" \t\r\n");
             if (start != std::string::npos && end != std::string::npos) {
-                header_data->content_length = std::stoll(value.substr(start, end - start + 1));
+                try {
+                    header_data->content_length = std::stoll(value.substr(start, end - start + 1));
+                } catch (...) {
+                    header_data->content_length = -1;
+                }
             }
         }
     }
@@ -203,7 +254,9 @@ void Downloader::setup_common_options(CURL* curl, const std::string& url) {
     // Progress/cancellation support
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
+
+    // Default XFERINFODATA will be overwritten by download/download_to_file
+    // to ensure type safety for the callback.
 
     // Enable TCP keepalive
     curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 1L);
@@ -226,6 +279,10 @@ DownloadResult Downloader::download(const std::string& url, int timeout_seconds)
 
     CURL* curl = static_cast<CURL*>(curl_);
     setup_common_options(curl, url);
+
+    // Set up ProgressData wrapper for cancellation check (file_data is null)
+    ProgressData progress_data{this, nullptr};
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress_data);
 
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_seconds));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);  // 5 second connect timeout
@@ -292,10 +349,10 @@ DownloadResult Downloader::download_to_file(const std::string& url, const std::s
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 10L);     // for more than 10 seconds
 
     FileWriteData write_data{&file, this, progress_cb, 0, 0};
-    HeaderData header_data;
+    ProgressData progress_data{this, &write_data};
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress_data);
 
-    // Skip HEAD request - just get content-length from response headers during download
-    // HEAD requests can be slow/blocked by some servers
+    HeaderData header_data;
 
     // Do the actual download
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, file_write_callback);
@@ -360,6 +417,9 @@ bool Downloader::url_exists(const std::string& url) {
 
     CURL* curl = static_cast<CURL*>(curl_);
     setup_common_options(curl, url);
+    // Use dummy progress data for cancellation
+    ProgressData progress_data{this, nullptr};
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress_data);
 
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);  // HEAD request
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);

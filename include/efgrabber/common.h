@@ -1,8 +1,24 @@
 /*
- * include/efgrabber/common.h - Common definitions, configuration structs, and constants
- * Copyright (c) 2026 Kirn Gill II
- * SPDX-License-Identifier: MIT
- * See LICENSE file for full license text.
+ * common.h - Common definitions, configuration structs, and constants
+ * Copyright © 2026 Kirn Gill II <segin2005@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #pragma once
@@ -196,6 +212,29 @@ constexpr int PAGE_TIMEOUT_SECONDS = 60;       // 1 minute
 constexpr const char* REQUIRED_COOKIE = "justiceGovAgeVerified=true";
 constexpr const char* USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36 Edg/144.0.0.0";
 constexpr const char* TARGET_DOMAIN = "justice.gov";
+
+// Error codes for structured error reporting
+enum class ErrorCode {
+    UNKNOWN = 0,
+    DB_INIT_FAILED,
+    DB_OPERATION_FAILED,
+    FILE_IO_ERROR,
+    NETWORK_ERROR,
+    DOWNLOAD_CANCELLED,
+    SIZE_MISMATCH,
+    HTTP_ERROR,
+    ANTIBOT_BLOCKED,
+    INVALID_ARGUMENT,
+    THREADPOOL_ERROR,
+    // Add more specific error codes as needed
+};
+
+// Structured Error information
+struct ErrorInfo {
+    ErrorCode code;
+    std::string message;
+};
+
 
 // Helper to convert DownloadStatus to string
 inline const char* status_to_string(DownloadStatus status) {

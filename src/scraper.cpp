@@ -1,7 +1,24 @@
 /*
- * Copyright (c) 2026 Kirn Gill II
- * SPDX-License-Identifier: MIT
- * See LICENSE file for full license text.
+ * scraper.cpp - Implementation of the HTML scraper
+ * Copyright © 2026 Kirn Gill II <segin2005@gmail.com>
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "efgrabber/scraper.h"
@@ -50,22 +67,14 @@ std::vector<PdfLink> Scraper::extract_pdf_links(const std::string& html_content)
             // Build full URL if it's a relative path
             if (href.find("http") != 0) {
                 if (href[0] == '/') {
-                    link.url = "https://www.justice.gov" + href;
+                    link.url = "https://www." + std::string(TARGET_DOMAIN) + href;
                 } else {
-                    link.url = "https://www.justice.gov/" + href;
+                    link.url = "https://www." + std::string(TARGET_DOMAIN) + "/" + href;
                 }
             } else {
                 link.url = href;
             }
 
-            // Decode URL-encoded spaces
-            std::string::size_type pos = 0;
-            while ((pos = link.url.find("%20", pos)) != std::string::npos) {
-                // Keep %20 in URLs for proper requests
-                pos += 3;
-            }
-
-            link.filename = file_id + ".pdf";
             links.push_back(std::move(link));
         }
 
@@ -108,7 +117,11 @@ std::string Scraper::extract_file_id(const std::string& url_or_filename) const {
 uint64_t Scraper::parse_file_id_number(const std::string& file_id) const {
     std::smatch match;
     if (std::regex_search(file_id, match, file_id_regex_)) {
-        return std::stoull(match[1].str());
+        try {
+            return std::stoull(match[1].str());
+        } catch (...) {
+            return 0; // Return 0 on conversion error
+        }
     }
     return 0;
 }
