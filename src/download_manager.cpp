@@ -34,23 +34,363 @@ namespace fs = std::filesystem;
 
 namespace efgrabber {
 
-// Helper to get cookies with precedence: Jar > String > File
-std::string DownloadManager::get_effective_cookies_for_url(const std::string& url) {
-    if (cookie_jar_) {
-        std::string cookies = cookie_jar_->get_cookies_for_url(url);
-        if (!cookies.empty()) {
-            return cookies;
+// S-curve (sigmoid) backoff calculation
+// Delay increases slowly at first, then rapidly, then plateaus
+static int64_t calculate_s_curve_backoff(int retry_count) {
+    if (retry_count <= 0) return 0;
+
+    const double max_delay = 600.0; // 10 minutes max
+    const double min_delay = 5.0;   // 5 seconds min
+    const double k = 1.0;           // Steepness
+    const double mid = 5.0;         // Halfway point at 5 retries
+
+    double delay = min_delay + (max_delay - min_delay) / (1.0 + std::exp(-k * (retry_count - mid)));
+    return static_cast<int64_t>(delay);
+}
+
+DownloadManager::DownloadManager(const std::string& db_path, const std::string& download_dir)
+    : db_path_(db_path), download_dir_(download_dir) {
+}
+
+DownloadManager::~DownloadManager() {
+    // Always stop and join threads, even if already stopped
+    stop_requested_ = true;
+    paused_ = false;
+    pause_cv_.notify_all();
+
+    // Join all threads if joinable
+    if (scraper_thread_.joinable()) {
+        scraper_thread_.join();
+    }
+    if (brute_force_thread_.joinable()) {
+        brute_force_thread_.join();
+    }
+    if (download_thread_.joinable()) {
+        download_thread_.join();
+    }
+    if (stats_thread_.joinable()) {
+        stats_thread_.join();
+    }
+
+    // Shutdown thread pools
+    if (download_pool_) {
+        download_pool_->shutdown();
+    }
+    if (scrape_pool_) {
+        scrape_pool_->shutdown();
+    }
+
+    running_ = false;
+}
+
+bool DownloadManager::initialize() {
+    try {
+        // Create download directory if it doesn't exist
+        fs::create_directories(download_dir_);
+
+        // Initialize database
+        db_ = std::make_unique<Database>(db_path_);
+        if (!db_->initialize()) {
+            log("Failed to initialize database: " + db_->get_last_error());
+            return false;
         }
+
+        // Initialize cookie jar
+        cookie_jar_ = std::make_unique<CookieJar>();
+        // Start reaper thread (every 60 seconds)
+        cookie_jar_->start_reaper(60);
+
+        log("Download manager initialized");
+        return true;
+    } catch (const std::exception& e) {
+        log("Initialization error: " + std::string(e.what()));
+        return false;
+    }
+}
+
+void DownloadManager::start(const DataSetConfig& config, OperationMode mode) {
+    if (running_) {
+        log("Already running");
+        return;
     }
 
-    if (!cookie_string_.empty()) {
-        return cookie_string_;
+    current_config_ = config;
+    current_mode_ = mode;
+    running_ = true;
+    paused_ = false;
+    stop_requested_ = false;
+
+    // Reset stats
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_ = DownloadStats{};
+        stats_.brute_force_start = config.first_file_id;
+        stats_.brute_force_end = config.last_file_id;
+        stats_.start_time = std::chrono::system_clock::now();
     }
 
-    // Note: Cookie file is handled by setting it directly on the downloader if no string cookies exist,
-    // or we can read it here. For simplicity and consistency with curl, we might want to just
-    // return empty string here and let the caller check cookie_file_ if this returns empty.
-    return "";
+    start_time_ = std::chrono::steady_clock::now();
+    bytes_this_session_ = 0;
+    wire_time_ms_ = 0;
+    active_transfer_wall_ms_ = 0;
+    any_download_active_ = false;
+
+    // Create scraper
+    scraper_ = std::make_unique<Scraper>(config);
+
+    // Create thread pools
+    download_pool_ = std::make_unique<ThreadPool>(max_concurrent_downloads_);
+    scrape_pool_ = std::make_unique<ThreadPool>(max_concurrent_scrapes_);
+
+    log("Starting download for " + config.name);
+
+    // Start worker threads based on mode
+    if (mode == OperationMode::SCRAPER || mode == OperationMode::HYBRID) {
+        scraper_thread_ = std::thread(&DownloadManager::scraper_worker, this);
+    }
+
+    if (mode == OperationMode::BRUTE_FORCE || mode == OperationMode::HYBRID) {
+        brute_force_thread_ = std::thread(&DownloadManager::brute_force_worker, this);
+    }
+
+    // Start stats update thread
+    stats_thread_ = std::thread(&DownloadManager::stats_worker, this);
+
+    // Start download worker
+    download_thread_ = std::thread(&DownloadManager::download_worker, this);
+}
+
+void DownloadManager::start_download_only(const DataSetConfig& config) {
+    if (running_) {
+        log("Already running");
+        return;
+    }
+
+    current_config_ = config;
+    current_mode_ = OperationMode::SCRAPER;  // Pretend scraper mode but don't start scraper
+    running_ = true;
+    paused_ = false;
+    stop_requested_ = false;
+
+    // Reset stats
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        stats_ = DownloadStats{};
+        stats_.start_time = std::chrono::system_clock::now();
+    }
+
+    start_time_ = std::chrono::steady_clock::now();
+    bytes_this_session_ = 0;
+    wire_time_ms_ = 0;
+    active_transfer_wall_ms_ = 0;
+    any_download_active_ = false;
+
+    // Create scraper (needed for file URL building)
+    scraper_ = std::make_unique<Scraper>(config);
+
+    // Create download pool only
+    download_pool_ = std::make_unique<ThreadPool>(max_concurrent_downloads_);
+
+    log("Starting download-only mode for " + config.name);
+
+    // Start stats update thread
+    stats_thread_ = std::thread(&DownloadManager::stats_worker, this);
+
+    // Start download worker - it will wait for files to be added to the queue
+    download_thread_ = std::thread(&DownloadManager::download_worker, this);
+}
+
+void DownloadManager::stop() {
+    if (!running_) return;
+
+    stop_requested_ = true;
+    paused_ = false;
+    pause_cv_.notify_all();
+
+    // Wait for threads to finish
+    if (scraper_thread_.joinable()) {
+        scraper_thread_.join();
+    }
+    if (brute_force_thread_.joinable()) {
+        brute_force_thread_.join();
+    }
+    if (download_thread_.joinable()) {
+        download_thread_.join();
+    }
+    if (stats_thread_.joinable()) {
+        stats_thread_.join();
+    }
+
+    // Shutdown thread pools
+    if (download_pool_) {
+        download_pool_->shutdown();
+    }
+    if (scrape_pool_) {
+        scrape_pool_->shutdown();
+    }
+
+    running_ = false;
+    log("Download stopped");
+
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    if (callbacks_.on_complete) {
+        callbacks_.on_complete();
+    }
+}
+
+void DownloadManager::pause() {
+    if (!running_ || paused_) return;
+    paused_ = true;
+    log("Download paused");
+}
+
+void DownloadManager::resume() {
+    if (!running_ || !paused_) return;
+    paused_ = false;
+    pause_cv_.notify_all();
+    log("Download resumed");
+}
+
+DownloadStats DownloadManager::get_stats() const {
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    return stats_;
+}
+
+void DownloadManager::set_callbacks(const DownloadCallbacks& callbacks) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    callbacks_ = callbacks;
+}
+
+void DownloadManager::set_max_concurrent_downloads(int max) {
+    max_concurrent_downloads_.store(max);
+}
+
+void DownloadManager::set_max_concurrent_scrapes(int max) {
+    max_concurrent_scrapes_ = max;
+}
+
+void DownloadManager::set_retry_attempts(int attempts) {
+    max_retry_attempts_ = attempts;
+}
+
+void DownloadManager::set_cookie_file(const std::string& cookie_file) {
+    cookie_file_ = cookie_file;
+}
+
+void DownloadManager::set_cookie_string(const std::string& cookies) {
+    cookie_string_ = cookies;
+    // Also parse into jar for better management
+    if (cookie_jar_ && !cookies.empty()) {
+        cookie_jar_->add_from_cookie_string(cookies, TARGET_DOMAIN);
+    }
+}
+
+void DownloadManager::set_overwrite_existing(bool overwrite) {
+    overwrite_existing_ = overwrite;
+}
+
+void DownloadManager::set_external_scraping_active(bool active) {
+    external_scraping_active_.store(active);
+}
+
+void DownloadManager::add_file_to_queue(const std::string& file_id, const std::string& url, const std::string& local_path) {
+    if (!db_) return;
+
+    // Check if file already exists in database
+    if (db_->file_exists(file_id, current_config_.id)) {
+        return;  // Already queued or downloaded
+    }
+
+    FileRecord record;
+    record.data_set = current_config_.id;
+    record.file_id = file_id;
+    record.url = url;
+    record.local_path = local_path;
+    record.status = DownloadStatus::PENDING;
+
+    db_->add_file(record);
+}
+
+void DownloadManager::add_files_to_queue(const std::vector<std::tuple<std::string, std::string, std::string>>& files) {
+    if (!db_ || files.empty()) {
+        std::cerr << "[DEBUG] add_files_to_queue: db_=" << (db_ ? "valid" : "null") << ", files.size()=" << files.size() << std::endl;
+        return;
+    }
+
+    std::cerr << "[DEBUG] add_files_to_queue: Adding " << files.size() << " files to queue for data_set=" << current_config_.id << std::endl;
+
+    std::vector<FileRecord> records;
+    records.reserve(files.size());
+    int skipped_duplicates = 0;
+
+    for (const auto& [file_id, url, local_path] : files) {
+        // Skip if already exists
+        if (db_->file_exists(file_id, current_config_.id)) {
+            skipped_duplicates++;
+            continue;
+        }
+
+        FileRecord record;
+        record.data_set = current_config_.id;
+        record.file_id = file_id;
+        record.url = url;
+        record.local_path = local_path;
+        record.status = DownloadStatus::PENDING;
+        records.push_back(std::move(record));
+    }
+
+    std::cerr << "[DEBUG] add_files_to_queue: " << records.size() << " new records, " << skipped_duplicates << " skipped (already in db)" << std::endl;
+
+    if (!records.empty()) {
+        db_->add_files_batch(records);
+        std::cerr << "[DEBUG] add_files_to_queue: Added to database" << std::endl;
+    }
+}
+
+int DownloadManager::reset_interrupted_downloads(int data_set) {
+    if (!db_) return -1;
+    return db_->reset_in_progress_files(data_set);
+}
+
+int DownloadManager::retry_failed_downloads(int data_set) {
+    if (!db_) return -1;
+    return db_->reset_failed_files(data_set);
+}
+
+int DownloadManager::reset_all_to_pending(int data_set) {
+    if (!db_) return -1;
+    return db_->reset_all_files(data_set);
+}
+
+bool DownloadManager::has_pending_work(int data_set) {
+    if (!db_) return false;
+    return db_->has_existing_work(data_set);
+}
+
+int DownloadManager::clear_data_set(int data_set) {
+    if (!db_) return -1;
+    return db_->clear_data_set(data_set);
+}
+
+void DownloadManager::mark_page_scraped(int data_set, int page_number, int pdf_count) {
+    if (!db_) return;
+    db_->mark_page_scraped(data_set, page_number, pdf_count);
+}
+
+bool DownloadManager::is_page_scraped(int data_set, int page_number) {
+    if (!db_) return false;
+    auto page = db_->get_page(data_set, page_number);
+    return page.has_value() && page->scraped;
+}
+
+std::vector<int> DownloadManager::get_unscraped_pages(int data_set, int max_page) {
+    if (!db_) return {};
+
+    // First ensure all pages exist in the database
+    db_->add_pages_batch(data_set, 0, max_page);
+
+    // Get unscraped pages
+    return db_->get_unscraped_pages(data_set, max_page + 1);
 }
 
 void DownloadManager::scraper_worker() {
@@ -63,19 +403,53 @@ void DownloadManager::scraper_worker() {
     int low = 0;
     int high = 100000;  // Start with a high upper bound
 
+    // Removed single probe_downloader instance to allow fresh cookies per request if needed
+    // Downloader probe_downloader;
+    // if (!cookie_string_.empty()) {
+    //     probe_downloader.set_cookie(cookie_string_);
+    // } else if (!cookie_file_.empty()) {
+    //     probe_downloader.set_cookie_file(cookie_file_);
+    // }
+
     while (low <= high && !stop_requested_) {
         int mid = low + (high - low) / 2;
         std::string url = scraper_->build_page_url(mid);
 
         Downloader probe_downloader;
-        std::string cookies = get_effective_cookies_for_url(url);
-        if (!cookies.empty()) {
-            probe_downloader.set_cookie(cookies);
-        } else if (!cookie_file_.empty()) {
-            probe_downloader.set_cookie_file(cookie_file_);
+        // Prefer cookies from jar
+        if (cookie_jar_) {
+            std::string cookies = cookie_jar_->get_cookies_for_url(url);
+            if (!cookies.empty()) {
+                 probe_downloader.set_cookie(cookies);
+            } else if (!cookie_string_.empty()) {
+                 probe_downloader.set_cookie(cookie_string_);
+            } else if (!cookie_file_.empty()) {
+                 probe_downloader.set_cookie_file(cookie_file_);
+            }
+        } else {
+            if (!cookie_string_.empty()) {
+                probe_downloader.set_cookie(cookie_string_);
+            } else if (!cookie_file_.empty()) {
+                probe_downloader.set_cookie_file(cookie_file_);
+            }
         }
 
-        auto result = probe_downloader.download_page(url);
+        DownloadResult result;
+        int retries = 0;
+        const int max_retries = 3;
+
+        while (retries < max_retries) {
+            result = probe_downloader.download_page(url);
+
+            if (result.http_code == 200 || result.http_code == 404 || stop_requested_) {
+                break;
+            }
+
+            retries++;
+            if (retries < max_retries) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+        }
 
         if (cookie_jar_ && !result.set_cookie_headers.empty()) {
             for (const auto& header : result.set_cookie_headers) {
@@ -353,11 +727,21 @@ void DownloadManager::scrape_page(int page_number) {
 
     // Prefer cookies from jar (which includes initial string + updates),
     // fallback to static string only if jar is empty/failed
-    std::string cookies = get_effective_cookies_for_url(url);
-    if (!cookies.empty()) {
-         downloader.set_cookie(cookies);
-    } else if (!cookie_file_.empty()) {
-         downloader.set_cookie_file(cookie_file_);
+    if (cookie_jar_) {
+        std::string cookies = cookie_jar_->get_cookies_for_url(url);
+        if (!cookies.empty()) {
+             downloader.set_cookie(cookies);
+        } else if (!cookie_string_.empty()) {
+             downloader.set_cookie(cookie_string_);
+        } else if (!cookie_file_.empty()) {
+             downloader.set_cookie_file(cookie_file_);
+        }
+    } else {
+        if (!cookie_string_.empty()) {
+            downloader.set_cookie(cookie_string_);
+        } else if (!cookie_file_.empty()) {
+            downloader.set_cookie_file(cookie_file_);
+        }
     }
 
     auto result = downloader.download_page(url);
@@ -430,11 +814,21 @@ void DownloadManager::download_file(const FileRecord& file) {
 
         Downloader downloader;
         // Prefer cookies from jar
-        std::string cookies = get_effective_cookies_for_url(file.url);
-        if (!cookies.empty()) {
-             downloader.set_cookie(cookies);
-        } else if (!cookie_file_.empty()) {
-             downloader.set_cookie_file(cookie_file_);
+        if (cookie_jar_) {
+            std::string cookies = cookie_jar_->get_cookies_for_url(file.url);
+            if (!cookies.empty()) {
+                 downloader.set_cookie(cookies);
+            } else if (!cookie_string_.empty()) {
+                 downloader.set_cookie(cookie_string_);
+            } else if (!cookie_file_.empty()) {
+                 downloader.set_cookie_file(cookie_file_);
+            }
+        } else {
+            if (!cookie_string_.empty()) {
+                downloader.set_cookie(cookie_string_);
+            } else if (!cookie_file_.empty()) {
+                downloader.set_cookie_file(cookie_file_);
+            }
         }
 
         auto result = downloader.download_to_file(file.url, file.local_path);

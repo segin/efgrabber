@@ -44,7 +44,8 @@ std::string Scraper::build_pdf_regex(int data_set_id) {
     // Handles both "DataSet%20X" and "DataSet X" formats
     std::string id_str = std::to_string(data_set_id);
     // Match href="...DataSet%20X/EFTA....pdf" or href="...DataSet X/EFTA....pdf"
-    return R"(href\s*=\s*["']([^"']*(?:DataSet(?:%20|\s))" + id_str + R"()[^"']*\.pdf)["'])";
+    // Include trailing slash to ensure exact match of data set ID (e.g., "1/" vs "11/")
+    return R"(href\s*=\s*["']([^"']*(?:DataSet(?:%20|\s))" + id_str + R"(/)[^"']*\.pdf)["'])";
 }
 
 std::vector<PdfLink> Scraper::extract_pdf_links(const std::string& html_content) {
