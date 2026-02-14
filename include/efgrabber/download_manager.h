@@ -135,7 +135,6 @@ private:
     std::string get_local_path(const std::string& file_id) const;
 
     // Helper methods
-    void log(const std::string& message);
     void update_stats();
 
     // Core components
