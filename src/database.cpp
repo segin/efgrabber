@@ -109,7 +109,7 @@ bool Database::initialize() {
         );
 
         CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);
-        CREATE INDEX IF NOT EXISTS idx_files_data_set ON files(data_set);
+        CREATE INDEX IF NOT EXISTS idx_files_data_set_status ON files(data_set, status);
         CREATE INDEX IF NOT EXISTS idx_files_file_id ON files(file_id);
 
         CREATE TABLE IF NOT EXISTS pages (
