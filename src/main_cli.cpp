@@ -56,6 +56,7 @@ void print_usage(const char* program) {
     std::cout << "  -r, --retries N      Max retry attempts (default: 3)\n";
     std::cout << "  -s, --start ID       Brute force start ID (overrides default)\n";
     std::cout << "  -e, --end ID         Brute force end ID (overrides default)\n";
+    std::cout << "  -v, --verbose        Log download details to stderr\n";
     std::cout << "  -h, --help           Show this help message\n";
     std::cout << "\nExamples:\n";
     std::cout << "  " << program << " -d 11 -m scraper -k cookies.txt\n";
@@ -88,6 +89,7 @@ int main(int argc, char** argv) {
     int max_retries = 3;
     uint64_t brute_start = 0;
     uint64_t brute_end = 0;
+    bool verbose = false;
 
     // Parse command line options
     static struct option long_options[] = {
@@ -99,12 +101,13 @@ int main(int argc, char** argv) {
         {"retries", required_argument, nullptr, 'r'},
         {"start", required_argument, nullptr, 's'},
         {"end", required_argument, nullptr, 'e'},
+        {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "d:m:o:k:c:r:s:e:h", long_options, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "d:m:o:k:c:r:s:e:vh", long_options, nullptr)) != -1) {
         try {
             switch (opt) {
                 case 'd':
@@ -139,6 +142,9 @@ int main(int argc, char** argv) {
                     break;
                 case 'e':
                     brute_end = std::stoull(optarg);
+                    break;
+                case 'v':
+                    verbose = true;
                     break;
                 case 'h':
                     print_usage(argv[0]);
@@ -196,6 +202,7 @@ int main(int argc, char** argv) {
     // Create download manager
     std::string db_path = "efgrabber.db";
     DownloadManager manager(db_path, output_dir);
+    manager.set_verbose(verbose);
 
     if (!manager.initialize()) {
         std::cerr << "Failed to initialize download manager\n";
