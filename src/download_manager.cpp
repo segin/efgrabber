@@ -397,8 +397,6 @@ std::vector<int> DownloadManager::get_unscraped_pages(int data_set, int max_page
 }
 
 void DownloadManager::scraper_worker() {
-    log("Scraper worker started");
-
     // First, detect the actual number of pages by probing
     int detected_max_page = -1;
 
@@ -479,10 +477,7 @@ void DownloadManager::scraper_worker() {
     }
 
     if (detected_max_page < 0) {
-        log("Failed to detect page count, using config default");
         detected_max_page = current_config_.max_page_index;
-    } else {
-        log("Detected " + std::to_string(detected_max_page + 1) + " pages");
     }
 
     // Add all pages to database
@@ -506,10 +501,7 @@ void DownloadManager::scraper_worker() {
         // Get batch of unscraped pages
         auto pages = db_->get_unscraped_pages(current_config_.id, max_concurrent_scrapes_);
 
-        if (pages.empty()) {
-            log("All pages scraped");
-            break;
-        }
+        if (pages.empty()) break;
 
         // Submit scraping tasks
         std::vector<std::future<void>> futures;
@@ -523,18 +515,13 @@ void DownloadManager::scraper_worker() {
         for (auto& f : futures) {
             try {
                 f.get();
-            } catch (const std::exception& e) {
-                log("Scrape error: " + std::string(e.what()));
+            } catch (const std::exception&) {
             }
         }
     }
-
-    log("Scraper worker finished");
 }
 
 void DownloadManager::brute_force_worker() {
-    log("Brute force worker started");
-
     // Resume from last position
     uint64_t start_id = db_->get_brute_force_progress(current_config_.id);
     if (start_id == 0 || start_id < current_config_.first_file_id) {
@@ -547,8 +534,6 @@ void DownloadManager::brute_force_worker() {
         std::lock_guard<std::mutex> lock(stats_mutex_);
         stats_.brute_force_current = start_id;
     }
-
-    log("Brute force starting from " + scraper_->format_file_id(start_id));
 
     const size_t batch_size = 1000;  // Process in batches
     std::vector<FileRecord> batch;
@@ -597,8 +582,6 @@ void DownloadManager::brute_force_worker() {
         db_->add_files_batch(batch);
         db_->set_brute_force_progress(current_config_.id, brute_force_current_.load());
     }
-
-    log("Brute force worker finished");
 }
 
 void DownloadManager::download_worker() {
@@ -684,7 +667,6 @@ void DownloadManager::download_worker() {
                 continue;
             }
 
-            log("All downloads complete");
             break;
         }
 
@@ -702,8 +684,6 @@ void DownloadManager::download_worker() {
             });
         }
     }
-
-    log("Download worker finished");
 
     // Signal completion if we exited normally (not stopped)
     if (!stop_requested_) {
@@ -758,7 +738,6 @@ void DownloadManager::scrape_page(int page_number) {
     }
 
     if (!result.success) {
-        log("Failed to scrape page " + std::to_string(page_number) + ": " + result.error_message);
         return;
     }
 
@@ -1068,7 +1047,6 @@ void DownloadManager::log(const std::string& message) {
         std::cerr << message << std::endl;
     }
 }
-
 void DownloadManager::update_stats() {
     auto db_stats = db_->get_stats(current_config_.id);
 
