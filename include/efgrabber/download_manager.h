@@ -48,7 +48,7 @@ enum class OperationMode {
 // Callbacks for GUI updates - structured events, no string logging
 struct DownloadCallbacks {
     std::function<void(const DownloadStats&)> on_stats_update;
-    std::function<void(const std::string& file_id, DownloadStatus status)> on_file_status_change;
+    std::function<void(const std::string& file_id, DownloadStatus status, const std::string& error_msg)> on_file_status_change;
     std::function<void(int page_number, int pdf_count)> on_page_scraped;
     std::function<void()> on_complete;
     std::function<void(const std::string& error)> on_error;
@@ -96,6 +96,7 @@ public:
     void set_cookie_file(const std::string& cookie_file);
     void set_cookie_string(const std::string& cookies);  // Direct cookie string
     void set_overwrite_existing(bool overwrite);  // Overwrite existing files on disk
+    void set_verbose(bool verbose);  // Enable logging to stderr
 
     // Get current thread count
     int get_max_concurrent_downloads() const { return max_concurrent_downloads_.load(); }
@@ -155,6 +156,7 @@ private:
     std::string cookie_file_;
     std::string cookie_string_;  // Direct cookie string from browser
     bool overwrite_existing_{false};  // Overwrite files that already exist on disk
+    bool verbose_{false};  // Log to stderr
 
     // State
     std::atomic<bool> running_{false};

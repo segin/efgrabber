@@ -145,3 +145,23 @@ endif()
 install(TARGETS efgrabber-cli
     RUNTIME DESTINATION bin
 )
+
+# Testing
+enable_testing()
+
+add_executable(test_scraper
+    tests/test_scraper.cpp
+    src/scraper.cpp
+)
+
+target_link_libraries(test_scraper
+    ${CURL_LIBRARIES}
+    SQLite::SQLite3
+    Threads::Threads
+)
+
+target_include_directories(test_scraper PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+add_test(NAME ScraperTest COMMAND test_scraper)

@@ -876,7 +876,7 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
     callbacks.on_error = [this](const std::string& error) {
         emit errorOccurred(QString::fromStdString(error));
     };
-    callbacks.on_file_status_change = [this](const std::string& file_id, DownloadStatus status) {
+    callbacks.on_file_status_change = [this](const std::string& file_id, DownloadStatus status, const std::string& error_msg) {
         // Only log at verbose level - this could be millions of messages
         if (logLevel_ != LogLevel::VERBOSE && logLevel_ != LogLevel::DEBUG) return;
         if (!logDownloadCheck_->isChecked()) return;
@@ -888,7 +888,12 @@ void MainWindow::startDownload(int dataSet, OperationMode mode) {
             case DownloadStatus::NOT_FOUND: statusStr = "404"; break;
             default: return;  // Don't log other status changes
         }
-        appendLog(QString("[DL]  %1: %2").arg(QString::fromStdString(file_id)).arg(statusStr));
+        
+        QString logMsg = QString("[DL]  %1: %2").arg(QString::fromStdString(file_id)).arg(statusStr);
+        if (status == DownloadStatus::FAILED && !error_msg.empty()) {
+            logMsg += QString(" - %1").arg(QString::fromStdString(error_msg));
+        }
+        appendLog(logMsg);
     };
     callbacks.on_worker_state = [this](const std::string& worker_name, bool started) {
         logNormal(LogChannel::SYSTEM, QString("%1 %2")
