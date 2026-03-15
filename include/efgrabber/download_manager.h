@@ -178,7 +178,6 @@ private:
     std::chrono::steady_clock::time_point first_active_time_;
     std::chrono::steady_clock::time_point last_active_time_;
     std::atomic<int64_t> active_transfer_wall_ms_{0};  // Wall time during which downloads were active
-    std::atomic<bool> any_download_active_{false};
 
     // Brute force state
     std::atomic<uint64_t> brute_force_current_{0};

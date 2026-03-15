@@ -133,7 +133,6 @@ void DownloadManager::start(const DataSetConfig& config, OperationMode mode) {
     bytes_this_session_ = 0;
     wire_time_ms_ = 0;
     active_transfer_wall_ms_ = 0;
-    any_download_active_ = false;
 
     // Create scraper
     scraper_ = std::make_unique<Scraper>(config);
@@ -183,7 +182,6 @@ void DownloadManager::start_download_only(const DataSetConfig& config) {
     bytes_this_session_ = 0;
     wire_time_ms_ = 0;
     active_transfer_wall_ms_ = 0;
-    any_download_active_ = false;
 
     // Create scraper (needed for file URL building)
     scraper_ = std::make_unique<Scraper>(config);
@@ -676,11 +674,27 @@ void DownloadManager::download_worker() {
 
             // Mark as in progress
             db_->update_file_status(file.id, DownloadStatus::IN_PROGRESS);
-            active_downloads_++;
+            
+            // Track burst start when first download begins
+            {
+                std::lock_guard<std::mutex> lock(transfer_time_mutex_);
+                if (active_downloads_.fetch_add(1) == 0) {
+                    first_active_time_ = std::chrono::steady_clock::now();
+                }
+            }
 
             download_pool_->submit_detached([this, file]() {
                 download_file(file);
-                active_downloads_--;
+                
+                // Track burst end when last download finishes
+                {
+                    std::lock_guard<std::mutex> lock(transfer_time_mutex_);
+                    if (active_downloads_.fetch_sub(1) == 1) {
+                        auto now = std::chrono::steady_clock::now();
+                        active_transfer_wall_ms_ += std::chrono::duration_cast<std::chrono::milliseconds>(
+                            now - first_active_time_).count();
+                    }
+                }
             });
         }
     }
@@ -785,16 +799,6 @@ void DownloadManager::download_file(const FileRecord& file) {
         fs::path filepath(file.local_path);
         fs::create_directories(filepath.parent_path());
 
-        // Track when this download starts for active transfer time
-        auto download_start = std::chrono::steady_clock::now();
-        {
-            std::lock_guard<std::mutex> lock(transfer_time_mutex_);
-            if (!any_download_active_.load()) {
-                first_active_time_ = download_start;
-                any_download_active_.store(true);
-            }
-        }
-
         Downloader downloader;
         // Prefer cookies from jar
         if (cookie_jar_) {
@@ -820,16 +824,6 @@ void DownloadManager::download_file(const FileRecord& file) {
             for (const auto& header : result.set_cookie_headers) {
                  cookie_jar_->add_from_header(header, TARGET_DOMAIN);
             }
-        }
-
-        // Track when this download ends
-        auto download_end = std::chrono::steady_clock::now();
-        {
-            std::lock_guard<std::mutex> lock(transfer_time_mutex_);
-            last_active_time_ = download_end;
-            // Update active transfer wall time (time from first active to now)
-            active_transfer_wall_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-                last_active_time_ - first_active_time_).count();
         }
 
         if (result.http_code == 404) {
@@ -934,16 +928,6 @@ void DownloadManager::download_file(const FileRecord& file) {
 
             fs::create_directories(fs::path(alt_path).parent_path());
 
-            // Track when this download starts for active transfer time
-            auto alt_start = std::chrono::steady_clock::now();
-            {
-                std::lock_guard<std::mutex> lock(transfer_time_mutex_);
-                if (!any_download_active_.load()) {
-                    first_active_time_ = alt_start;
-                    any_download_active_.store(true);
-                }
-            }
-
             Downloader alt_downloader;
             if (cookie_jar_) {
                 std::string cookies = cookie_jar_->get_cookies_for_url(alt_url);
@@ -968,15 +952,6 @@ void DownloadManager::download_file(const FileRecord& file) {
                 for (const auto& header : alt_result.set_cookie_headers) {
                     cookie_jar_->add_from_header(header, TARGET_DOMAIN);
                 }
-            }
-
-            // Track when this download ends
-            auto alt_end = std::chrono::steady_clock::now();
-            {
-                std::lock_guard<std::mutex> lock(transfer_time_mutex_);
-                last_active_time_ = alt_end;
-                active_transfer_wall_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    last_active_time_ - first_active_time_).count();
             }
 
             if (alt_result.http_code == 404) {
@@ -1071,9 +1046,15 @@ void DownloadManager::update_stats() {
 
         // Wire speed: bytes / wall time during which downloads were active
         // This gives aggregate throughput excluding idle time waiting for scraper
-        int64_t active_wall_ms = active_transfer_wall_ms_.load();
-        if (active_wall_ms > 0) {
-            stats_.wire_speed_bps = (bytes_this_session_.load() * 1000.0) / active_wall_ms;
+        int64_t total_active_ms = active_transfer_wall_ms_.load();
+        if (active_downloads_.load() > 0) {
+            std::lock_guard<std::mutex> lock(transfer_time_mutex_);
+            total_active_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                now - first_active_time_).count();
+        }
+
+        if (total_active_ms > 0) {
+            stats_.wire_speed_bps = (bytes_this_session_.load() * 1000.0) / total_active_ms;
         } else {
             stats_.wire_speed_bps = 0;
         }
