@@ -137,6 +137,7 @@ private:
 
     // Helper methods
     void update_stats();
+    void log(const std::string& message);
 
     // Core components
     std::unique_ptr<Database> db_;
